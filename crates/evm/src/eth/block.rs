@@ -187,18 +187,22 @@ where
             .ethereum_fork_activation(EthereumHardfork::Dao)
             .transitions_at_block(self.evm.block().number)
         {
+            let chain_id = self.evm.chain_id();
             // drain balances from hardcoded addresses.
             let drained_balance: u128 = self
                 .evm
                 .db_mut()
-                .drain_balances(dao_fork::DAO_HARDFORK_ACCOUNTS)
+                .drain_balances(
+                    dao_fork::DAO_HARDFORK_ACCOUNTS.iter().map(|addr| addr.on_chain(chain_id)),
+                )
                 .map_err(|_| BlockValidationError::IncrementBalanceFailed)?
                 .into_iter()
                 .sum();
 
             // return balance to DAO beneficiary.
-            *balance_increments.entry(dao_fork::DAO_HARDFORK_BENEFICIARY).or_default() +=
-                drained_balance;
+            *balance_increments
+                .entry(dao_fork::DAO_HARDFORK_BENEFICIARY.on_chain(chain_id))
+                .or_default() += drained_balance;
         }
         // increment balances
         self.evm
