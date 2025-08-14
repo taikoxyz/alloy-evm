@@ -23,6 +23,7 @@ alloy-hardforks.workspace = true
 revm.workspace = true
 op-revm = { workspace = true, optional = true }
 op-alloy-consensus = { workspace = true, optional = true }
+gwyneth-revm.workspace = true
 
 auto_impl.workspace = true
 derive_more.workspace = true

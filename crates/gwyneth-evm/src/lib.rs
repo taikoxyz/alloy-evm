@@ -17,17 +17,14 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+use gwyneth_revm::{GwynethContext, GwynethPrecompiles, GwynethTransaction};
 use revm::{
     context::{BlockEnv, TxEnv},
-    handler::{instructions::EthInstructions},
-    inspector::NoOpInspector,
-    Context, ExecuteEvm, InspectEvm, Inspector,
     context_interface::result::{EVMError, HaltReason, ResultAndState},
-        primitives::hardfork::SpecId,
+    inspector::NoOpInspector,
+    primitives::hardfork::SpecId,
+    Context, ExecuteEvm, InspectEvm, Inspector,
 };
-use gwyneth_revm::{GwynethContext, GwynethTransaction, GwynethPrecompiles};
-
-
 
 /// GwynethEvm based On  Evm
 #[allow(missing_debug_implementations)]
@@ -41,18 +38,12 @@ impl<DB: Database, INSP> GwynethEvm<DB, INSP> {
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`GwynethEvm`](gwyneth_revm::GwynethEvm) should be invoked on [`Evm::transact`].
-    pub const fn new(
-        evm: gwyneth_revm::GwynethEvm<DB, INSP>,
-        inspect: bool,
-    ) -> Self {
+    pub const fn new(evm: gwyneth_revm::GwynethEvm<DB, INSP>, inspect: bool) -> Self {
         Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner [`GwynethEvm`](gwyneth_revm::GwynethEvm) instance.
-    pub fn into_inner(
-        self,
-    ) -> gwyneth_revm::GwynethEvm<DB, INSP>
-    {
+    pub fn into_inner(self) -> gwyneth_revm::GwynethEvm<DB, INSP> {
         self.inner
     }
 
@@ -82,8 +73,6 @@ impl<DB: Database, INSP> DerefMut for GwynethEvm<DB, INSP> {
     }
 }
 
-/*
-
 impl<DB, INSP> Evm for GwynethEvm<DB, INSP>
 where
     DB: Database,
@@ -102,7 +91,7 @@ where
     }
 
     fn chain_id(&self) -> u64 {
-        self.cfg.chain_id
+        self.cfg.base.chain_id
     }
 
     fn transact_raw(
@@ -123,7 +112,8 @@ where
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        let tx = TxEnv {
+        let tx = GwynethTransaction {
+            base: TxEnv {
                 caller,
                 kind: TxKind::Call(contract),
                 // Explicitly set nonce to 0 so revm does not do any nonce checks
@@ -144,9 +134,11 @@ where
                 // blob fields can be None for this tx
                 blob_hashes: Vec::new(),
                 max_fee_per_blob_gas: 0,
-                tx_type: OpTxType::Deposit as u8,
+                tx_type: 0,
                 authorization_list: Default::default(),
-            }.into();
+            },
+            chain_ids: None,
+        };
 
         let mut gas_limit = tx.base.gas_limit;
         let mut basefee = 0;
@@ -157,7 +149,7 @@ where
         // disable the base fee check for this call by setting the base fee to zero
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // disable the nonce check
-        core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.cfg.base.disable_nonce_check, &mut disable_nonce_check);
 
         let mut res = self.transact(tx);
 
@@ -166,7 +158,7 @@ where
         // swap back to the previous base fee
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // swap back to the previous nonce check flag
-        core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.cfg.base.disable_nonce_check, &mut disable_nonce_check);
 
         // NOTE: We assume that only the contract storage is modified. Revm currently marks the
         // caller and block beneficiary accounts as "touched" when we do the above transact calls,
@@ -181,14 +173,15 @@ where
         res
     }
 
+    
     fn db_mut(&mut self) -> &mut Self::DB {
-        &mut self.journaled_state.database
+        &mut self.journaled_state.base.database
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
         let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.0.ctx;
 
-        (journaled_state.database, EvmEnv { block_env, cfg_env })
+        (journaled_state.base.database, EvmEnv { block_env, cfg_env: cfg_env.base })
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
@@ -212,17 +205,17 @@ where
     }
 }
 
-/// Factory producing [`OpEvm`]s.
+/// Factory producing [`GwynethEvm`]s.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct GwynethEvmFactory;
 
+/*
 impl EvmFactory for GwynethEvmFactory {
     type Evm<DB: Database, INSP: Inspector<GwynethContext<DB>>> = GwynethEvm<DB, INSP>;
     type Context<DB: Database> = GwynethContext<DB>;
     type Tx = GwynethTransaction<TxEnv>;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> =
-        EVMError<DBError>;
+    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
     type Precompiles = GwynethPrecompiles;

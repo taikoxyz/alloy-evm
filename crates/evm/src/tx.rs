@@ -34,6 +34,15 @@ where
     }
 }
 
+impl<T> IntoTxEnv<Self> for gwyneth_revm::GwynethTransaction<T>
+where
+    T: revm::context_interface::transaction::Transaction,
+{
+    fn into_tx_env(self) -> Self {
+        self
+    }
+}
+
 /// Helper user-facing trait to allow implementing [`IntoTxEnv`] on instances of [`Recovered`].
 pub trait FromRecoveredTx<Tx> {
     /// Builds a `TxEnv` from a transaction and a sender address.

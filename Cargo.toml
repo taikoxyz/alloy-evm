@@ -67,5 +67,6 @@ serde_json = "1"
 [patch.crates-io]
 alloy-primitives = { git = "https://github.com/taikoxyz/alloy-core.git", branch = "v1.2.1-gwyneth" }
 
-gwyneth-revm = { path = "../revm-private/crates/gwyneth" }
 revm = { path = "../revm-private/crates/revm"}
+op-revm = { path = "../revm-private/crates/op-revm"}
+gwyneth-revm = { path = "../revm-private/crates/gwyneth" }
