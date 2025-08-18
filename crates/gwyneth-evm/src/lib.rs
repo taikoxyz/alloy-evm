@@ -18,16 +18,15 @@ use core::{
 };
 
 use gwyneth_revm::{
-    context::{DefaultGwy, DefaultGwyneth, WithGwyDB},
+    context::{DefaultGwy, WithGwyDB},
     GwynethBuilder, GwynethContext, GwynethPrecompiles, GwynethTransaction,
 };
 use revm::{
     context::{BlockEnv, TxEnv},
     context_interface::result::{EVMError, HaltReason, ResultAndState},
-    database_interface::EmptyDB,
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
-    Context, ExecuteEvm, InspectEvm, Inspector, MainContext,
+    Context, ExecuteEvm, InspectEvm, Inspector,
 };
 
 /// GwynethEvm based On  Evm
@@ -228,9 +227,10 @@ impl EvmFactory for GwynethEvmFactory {
         input: EvmEnv<SpecId>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
-        let evm = GwynethContext::gwy().with_block(input.block_env).with_cfg(input.cfg_env.into());
-        let evm: GwynethContext<DB> = <GwynethContext<EmptyDB> as WithGwyDB>::with_gwy_db(evm, db);
-        let evm = evm
+        let evm = GwynethContext::gwy()
+            .with_block(input.block_env)
+            .with_cfg(input.cfg_env.into())
+            .with_gwy_db(db)
             .build_gwyneth_with_inspector(NoOpInspector {})
             .with_precompiles(GwynethPrecompiles::new_with_spec(spec_id));
         GwynethEvm { inner: evm, inspect: false }
@@ -243,9 +243,10 @@ impl EvmFactory for GwynethEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
-        let evm = GwynethContext::gwy().with_block(input.block_env).with_cfg(input.cfg_env.into());
-        let evm = evm.with_gwy_db::<DB>(db);
-        let evm = evm
+        let evm = GwynethContext::gwy()
+            .with_block(input.block_env)
+            .with_cfg(input.cfg_env.into())
+            .with_gwy_db(db)
             .build_gwyneth_with_inspector(inspector)
             .with_precompiles(GwynethPrecompiles::new_with_spec(spec_id));
         GwynethEvm { inner: evm, inspect: true }
