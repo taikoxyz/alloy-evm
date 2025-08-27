@@ -19,7 +19,7 @@ fn test_multichain_support() {
     block.number = 1000;
     block.beneficiary = ChainAddress::new(1, address!("0x0000000000000000000000000000000000000001"));
     
-    let mut block_env = HashMap::new();
+    let mut block_env = HashMap::default();
     block_env.insert(1, block);
     
     let env = EvmEnv { block_env, cfg_env };
@@ -89,7 +89,7 @@ fn test_basic_evm_creation() {
     block.number = 5000;
     block.beneficiary = ChainAddress::new(999, address!("0x0000000000000000000000000000000000000000"));
     
-    let mut block_env = HashMap::new();
+    let mut block_env = HashMap::default();
     block_env.insert(999, block);
     
     let env = EvmEnv { block_env, cfg_env };
@@ -116,7 +116,7 @@ fn test_different_chain_configs() {
         block.number = 1000 * chain_id;
         block.beneficiary = ChainAddress::new(chain_id, Address::from([chain_id as u8; 20]));
         
-        let mut block_env = HashMap::new();
+        let mut block_env = HashMap::default();
         block_env.insert(chain_id, block);
         
         let env = EvmEnv { block_env, cfg_env: cfg_env.clone() };

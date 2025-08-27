@@ -77,7 +77,7 @@ where
             receipts: Vec::new(),
             gas_used: 0,
             state_changes: Vec::new(),
-            gas_used_per_chain: HashMap::new(),
+            gas_used_per_chain: HashMap::default(),
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
