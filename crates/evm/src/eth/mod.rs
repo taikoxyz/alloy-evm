@@ -352,7 +352,7 @@ mod tests {
             early_cfg_env.spec = early_spec;
             early_cfg_env.chain_id = 1;
 
-            let mut block_map = HashMap::new();
+            let mut block_map = HashMap::default();
             block_map.insert(1, BlockEnv::default());
             let early_env = EvmEnv { block_env: block_map, cfg_env: early_cfg_env };
             let factory = EthEvmFactory;
@@ -370,7 +370,7 @@ mod tests {
             later_cfg_env.spec = later_spec;
             later_cfg_env.chain_id = 1;
 
-            let mut block_map = HashMap::new();
+            let mut block_map = HashMap::default();
             block_map.insert(1, BlockEnv::default());
             let later_env = EvmEnv { block_env: block_map, cfg_env: later_cfg_env };
             let mut multi_db = MultiEmptyDB::new();
