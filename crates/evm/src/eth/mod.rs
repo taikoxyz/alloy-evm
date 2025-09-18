@@ -7,7 +7,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use revm::{
-    context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv}, context_interface::result::{EVMError, HaltReason, ResultAndState}, handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider}, inspector::{inspectors::GwynethCompositeInspector, NoOpInspector}, interpreter::{interpreter::EthInterpreter, InterpreterResult}, precompile::{PrecompileSpecId, Precompiles}, primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind}, AutoSetupBuilder, Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm
+    context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv}, context_interface::result::{EVMError, HaltReason, ResultAndState}, handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider}, inspector::{inspectors::GwynethCompositeInspector, NoOpInspector}, interpreter::{interpreter::EthInterpreter, InterpreterResult}, precompile::{PrecompileSpecId, Precompiles}, primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind}, AutoSetupBuilder, Context, ExecuteEvm, InspectEvm, InspectSystemCallEvm, Inspector, SystemCallEvm
 };
 
 mod block;
@@ -240,8 +240,12 @@ where
         contract: ChainAddress,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Extract addresses from ChainAddress for system_call_with_caller
-        self.inner.system_call_with_caller(caller, contract, data)
+        // When inspection is enabled, use the inspect path so multi-chain gas tracking is populated.
+        if self.inspect {
+            self.inner.inspect_system_call_with_caller(caller, contract, data)
+        } else {
+            self.inner.system_call_with_caller(caller, contract, data)
+        }
     }
 
     fn db_mut(&mut self) -> &mut Self::DB {
