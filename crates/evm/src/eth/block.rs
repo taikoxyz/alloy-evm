@@ -160,7 +160,7 @@ where
             *self.gas_used_per_chain.entry(chain_id).or_default() += chain_gas;
         }
 
-        self.gwyneth_journal.push(result.gwyneth_journal());
+        self.gwyneth_journal.push(result.gwyneth_output().journal);
 
         // append gas used
         self.gas_used += gas_used;
