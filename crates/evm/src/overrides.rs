@@ -157,7 +157,7 @@ where
         status: AccountStatus::Touched,
         storage: Default::default(),
         transaction_id: 0,
-        warm_tracker: WarmTracker::default(),
+        warm_tracker: revm::state::WarmTracker::default(),
     };
 
     let storage_diff = match (account_override.state, account_override.state_diff) {
@@ -191,7 +191,7 @@ where
                     // we use inverted value here to ensure that storage is treated as changed
                     original_value: (!value).into(),
                     present_value: value.into(),
-                    is_cold: false,
+                    warm_tracker: revm::state::WarmTracker::default(),
                     transaction_id: 0,
                 },
             );
