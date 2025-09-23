@@ -1,6 +1,7 @@
 //! Helpers for dealing with Precompiles.
 
 use crate::EvmInternals;
+use alloc::format;
 use alloc::{borrow::Cow, boxed::Box, string::String, sync::Arc};
 use core::fmt::Debug;
 use alloy_consensus::transaction::Either;

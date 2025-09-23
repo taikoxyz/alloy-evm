@@ -148,6 +148,7 @@ where
         }
 
         if !result.is_success() {
+            #[cfg(feature = "std")]
             println!("result: {:?}", result);
         }
 

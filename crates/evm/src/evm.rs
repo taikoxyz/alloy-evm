@@ -62,8 +62,11 @@ pub trait Evm {
     fn block(&self) -> &BlockEnv {
         let chain_id = self.chain_id();
         if self.blocks().get(&chain_id).is_none() {
-            println!("chain_id: {}", chain_id);
-            println!("blocks: {:?}", self.blocks());
+            #[cfg(feature = "std")]
+            {
+                println!("chain_id: {}", chain_id);
+                println!("blocks: {:?}", self.blocks());
+            }
         }
         self.blocks()
             .get(&chain_id)
