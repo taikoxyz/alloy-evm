@@ -6,7 +6,12 @@ use alloy_eips::eip4895::{Withdrawal, Withdrawals};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{map::HashMap, Address};
 use crate::MultiDatabase;
-use revm::{context::BlockEnv, database::State, primitives::ChainAddress, state::{Account, EvmState}};
+use revm::{
+    context::BlockEnv,
+    database::State,
+    primitives::ChainAddress,
+    state::{Account, AccountStatus, EvmState, WarmTracker},
+};
 
 /// Collect all balance changes at the end of the block.
 ///
@@ -122,10 +127,16 @@ where
             BlockExecutionError::msg("could not load account for balance increment")
         })?;
 
-        let mut evm_account = Account::from(account.info.clone());
-        evm_account.mark_touch();
-
-        Ok((chain_address, evm_account))
+        Ok((
+            chain_address,
+            Account {
+                info: account.info.clone(),
+                storage: Default::default(),
+                status: AccountStatus::Touched,
+                transaction_id: 0,
+                warm_tracker: WarmTracker::default(),
+            },
+        ))
     };
 
     balance_increments

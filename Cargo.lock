@@ -2194,7 +2194,7 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 [[package]]
 name = "revm"
 version = "29.0.0"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "alloy-sol-macro",
  "alloy-sol-types",
@@ -2214,7 +2214,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "6.2.2"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "bitvec",
  "phf",
@@ -2225,7 +2225,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "9.0.2"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -2242,7 +2242,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "10.1.0"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -2258,7 +2258,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "7.0.5"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "alloy-eips",
  "revm-bytecode",
@@ -2271,7 +2271,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "7.0.5"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "auto_impl",
  "either",
@@ -2283,7 +2283,7 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "10.0.0"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "auto_impl",
  "derive-where",
@@ -2302,7 +2302,7 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "10.0.0"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "auto_impl",
  "either",
@@ -2320,7 +2320,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "25.0.2"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -2331,7 +2331,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "27.0.0"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -2355,7 +2355,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "20.2.1"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -2367,7 +2367,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "7.0.5"
-source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#b23dadf9a7c440e309c76661cb4c66f6c12b09e9"
+source = "git+https://github.com/taikoxyz/revm-private?branch=v86-gwyneth#c4928188b033280c261e5927911dbeffeb3d5d90"
 dependencies = [
  "bitflags",
  "revm-bytecode",

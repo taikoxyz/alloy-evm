@@ -157,6 +157,7 @@ where
         status: AccountStatus::Touched,
         storage: Default::default(),
         transaction_id: 0,
+        warm_tracker: WarmTracker::default(),
     };
 
     let storage_diff = match (account_override.state, account_override.state_diff) {
@@ -272,10 +273,10 @@ mod tests {
         // Verify that the account was created in the cache
         // The account should be in the state cache after applying the override
         let chain_addr = revm::primitives::ChainAddress::new(0, account);
-        
+
         // Check that the account exists in the cache
         assert!(db.cache.accounts.contains_key(&chain_addr), "Account should be in cache");
-        
+
         // Verify that storage was set (checking the cache directly)
         let cached_acc = db.cache.accounts.get(&chain_addr).unwrap();
         if let Some(acc) = &cached_acc.account {
