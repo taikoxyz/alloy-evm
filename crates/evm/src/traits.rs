@@ -2,8 +2,8 @@
 
 use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, B256, U256};
-use revm::primitives::ChainAddress;
 use core::{error::Error, fmt, fmt::Debug};
+use revm::primitives::ChainAddress;
 use revm::{
     context::{Block, DBErrorMarker, JournalTr},
     interpreter::{SStoreResult, StateLoad},
@@ -44,7 +44,9 @@ impl EvmInternalsError {
 ///
 /// This trait provides an abstraction over journal operations without exposing
 /// associated types, making it object-safe and suitable for dynamic dispatch.
-trait EvmInternalsTr: revm::database_interface::MultiChainDatabase<Error = ErasedError> + Debug {
+trait EvmInternalsTr:
+    revm::database_interface::MultiChainDatabase<Error = ErasedError> + Debug
+{
     fn load_account(
         &mut self,
         address: Address,
@@ -93,7 +95,11 @@ where
         self.journal.db_mut().basic_multi(address).map_err(ErasedError::new)
     }
 
-    fn code_by_hash_multi(&mut self, chain_id: u64, code_hash: B256) -> Result<Bytecode, Self::Error> {
+    fn code_by_hash_multi(
+        &mut self,
+        chain_id: u64,
+        code_hash: B256,
+    ) -> Result<Bytecode, Self::Error> {
         self.journal.db_mut().code_by_hash_multi(chain_id, code_hash).map_err(ErasedError::new)
     }
 
@@ -206,7 +212,9 @@ impl<'a> EvmInternals<'a> {
     ///
     /// Users should prefer using other methods for accessing state that rely on cached state in the
     /// journal instead.
-    pub fn db_mut(&mut self) -> impl revm::database_interface::MultiChainDatabase<Error = ErasedError> + '_ {
+    pub fn db_mut(
+        &mut self,
+    ) -> impl revm::database_interface::MultiChainDatabase<Error = ErasedError> + '_ {
         &mut *self.internals
     }
 

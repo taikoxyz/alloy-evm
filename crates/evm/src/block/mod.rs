@@ -1,13 +1,16 @@
 //! Block execution abstraction.
 
 use crate::{
-    Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded, MultiDatabase, RecoveredTx, ToTxEnv
+    Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded, MultiDatabase, RecoveredTx, ToTxEnv,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip7685::Requests;
 use revm::{
-    context::result::ExecutionResult, database::State, inspector::NoOpInspector,
-    primitives::{HashMap, GwynethJournal}, Inspector
+    context::result::ExecutionResult,
+    database::State,
+    inspector::NoOpInspector,
+    primitives::{GwynethJournal, HashMap},
+    Inspector,
 };
 
 mod error;

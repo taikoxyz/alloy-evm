@@ -3,13 +3,13 @@
 use crate::EvmInternals;
 use alloc::format;
 use alloc::{borrow::Cow, boxed::Box, string::String, sync::Arc};
-use core::fmt::Debug;
 use alloy_consensus::transaction::Either;
 use alloy_primitives::{
     self as primitives,
     map::{HashMap, HashSet},
     Address, Bytes, U256,
 };
+use core::fmt::Debug;
 use revm::{
     context::LocalContextTr,
     context_interface::ContextTr,
@@ -386,7 +386,7 @@ where
         // Execute the precompile
         let precompile_result = {
             let (local, journal) = (&context.local, &mut context.journaled_state);
-            
+
             let r;
             let input_bytes = match &inputs.input {
                 CallInput::SharedBuffer(range) => {
@@ -405,17 +405,22 @@ where
 
             // Get the BlockEnv for the chain of the caller
             let chain_id = inputs.caller_address.0;
-            let block_env = context.block.get(&chain_id)
+            let block_env = context
+                .block
+                .get(&chain_id)
                 .ok_or_else(|| format!("No block environment for chain {}", chain_id))?;
 
             precompile.call(PrecompileInput {
                 data: input_bytes,
                 gas: gas_limit,
-                caller: inputs.caller_address.1,  // Extract Address from ChainAddress
+                caller: inputs.caller_address.1, // Extract Address from ChainAddress
                 value: inputs.call_value,
                 internals: EvmInternals::new(journal, block_env, chain_id),
-                target_address: inputs.target_address.1,  // Extract Address from ChainAddress
-                bytecode_address: inputs.bytecode_address.expect("always set for precompile calls").1,  // Extract Address from ChainAddress
+                target_address: inputs.target_address.1, // Extract Address from ChainAddress
+                bytecode_address: inputs
+                    .bytecode_address
+                    .expect("always set for precompile calls")
+                    .1, // Extract Address from ChainAddress
             })
         };
 
@@ -424,10 +429,13 @@ where
                 // Store call options in the context if the precompile set them (XCALLOPTIONS)
                 if let Some(call_options) = output.call_options {
                     // Validate chain_id for XCALLOPTIONS precompile
-                    let is_xcalloptions = address == &primitives::address!("00000000000000000000000000000000000004d2");
+                    let is_xcalloptions = address
+                        == &primitives::address!("00000000000000000000000000000000000004d2");
                     if is_xcalloptions {
                         let allowed_chains = context.tx().allowed_chain_ids();
-                        if !allowed_chains.is_empty() && !allowed_chains.contains(&call_options.to.0) {
+                        if !allowed_chains.is_empty()
+                            && !allowed_chains.contains(&call_options.to.0)
+                        {
                             result.result = InstructionResult::PrecompileError;
                             return Ok(Some(result));
                         }
@@ -807,9 +815,7 @@ mod tests {
 
         let mut multi_db = MultiEmptyDB::new();
         multi_db.add_chain(1, EmptyDB::default());
-        let mut ctx = Context::mainnet()
-            .with_db(multi_db)
-            .build_mainnet();
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         // create a test input for the precompile (identity precompile)
         let identity_address = address!("0x0000000000000000000000000000000000000004");
@@ -890,9 +896,7 @@ mod tests {
 
         let mut multi_db = MultiEmptyDB::new();
         multi_db.add_chain(1, EmptyDB::default());
-        let mut ctx = Context::mainnet()
-            .with_db(multi_db)
-            .build_mainnet();
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         // define a closure that implements the precompile functionality
         let closure_precompile = |input: PrecompileInput<'_>| -> PrecompileResult {
@@ -950,9 +954,7 @@ mod tests {
 
         let mut multi_db = MultiEmptyDB::new();
         multi_db.add_chain(1, EmptyDB::default());
-        let mut ctx = Context::mainnet()
-            .with_db(multi_db)
-            .build_mainnet();
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         // Define a custom address pattern for dynamic precompiles
         let dynamic_prefix = [0xDE, 0xAD];
@@ -1012,9 +1014,7 @@ mod tests {
 
         let mut multi_db = MultiEmptyDB::new();
         multi_db.add_chain(1, EmptyDB::default());
-        let mut ctx = Context::mainnet()
-            .with_db(multi_db)
-            .build_mainnet();
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         let identity_address = address!("0x0000000000000000000000000000000000000004");
         let test_input = Bytes::from_static(b"test data");

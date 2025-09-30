@@ -109,17 +109,29 @@ where
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
 
         let chain_id = self.evm.chain_id();
-        self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm, chain_id)?;
-        self.system_caller
-            .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm, chain_id)?;
+        self.system_caller.apply_blockhashes_contract_call(
+            self.ctx.parent_hash,
+            &mut self.evm,
+            chain_id,
+        )?;
+        self.system_caller.apply_beacon_root_contract_call(
+            self.ctx.parent_beacon_block_root,
+            &mut self.evm,
+            chain_id,
+        )?;
 
         // Ensure that the create2deployer is force-deployed at the canyon transition. Optimism
         // blocks will always have at least a single transaction in them (the L1 info transaction),
         // so we can safely assume that this will always be triggered upon the transition and that
         // the above check for empty blocks will never be hit on OP chains.
         let chain_id = self.evm.chain_id();
-        ensure_create2_deployer(&self.spec, self.evm.block().timestamp.saturating_to(), self.evm.db_mut(), chain_id)
-            .map_err(BlockExecutionError::other)?;
+        ensure_create2_deployer(
+            &self.spec,
+            self.evm.block().timestamp.saturating_to(),
+            self.evm.db_mut(),
+            chain_id,
+        )
+        .map_err(BlockExecutionError::other)?;
 
         Ok(())
     }
@@ -225,7 +237,11 @@ where
         let chain_id = self.evm.chain_id();
         self.evm
             .db_mut()
-            .increment_balances(balance_increments.iter().map(|(addr, balance)| (ChainAddress::new(chain_id, *addr), *balance)))
+            .increment_balances(
+                balance_increments
+                    .iter()
+                    .map(|(addr, balance)| (ChainAddress::new(chain_id, *addr), *balance)),
+            )
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
         // call state hook with changes due to balance increments.
         let chain_id = self.evm.chain_id();

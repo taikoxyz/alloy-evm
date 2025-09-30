@@ -21,9 +21,12 @@ use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Log, B256};
 use revm::{
-    context::result::ExecutionResult, context_interface::result::ResultAndState,
-    database::State, database_interface::MultiChainDatabaseCommit,
-    primitives::{ChainAddress, HashMap, GwynethJournal}, Inspector,
+    context::result::ExecutionResult,
+    context_interface::result::ResultAndState,
+    database::State,
+    database_interface::MultiChainDatabaseCommit,
+    primitives::{ChainAddress, GwynethJournal, HashMap},
+    Inspector,
 };
 
 /// Context for Ethereum block execution.
@@ -70,7 +73,12 @@ where
     R: ReceiptBuilder,
 {
     /// Creates a new [`EthBlockExecutor`]
-    pub fn new(evm: Evm, ctx: HashMap<u64, EthBlockExecutionCtx<'a>>, spec: Spec, receipt_builder: R) -> Self {
+    pub fn new(
+        evm: Evm,
+        ctx: HashMap<u64, EthBlockExecutionCtx<'a>>,
+        spec: Spec,
+        receipt_builder: R,
+    ) -> Self {
         Self {
             evm,
             ctx,
@@ -112,9 +120,16 @@ where
 
         for (&chain_id, ctx) in self.ctx.iter() {
             //println!("[alloy-evm] apply_pre_execution_changes from ctx {} {:?} {:?}", chain_id, ctx.parent_hash, ctx.parent_beacon_block_root);
-            self.system_caller.apply_blockhashes_contract_call(ctx.parent_hash, &mut self.evm, chain_id)?;
-            self.system_caller
-                .apply_beacon_root_contract_call(ctx.parent_beacon_block_root, &mut self.evm, chain_id)?;
+            self.system_caller.apply_blockhashes_contract_call(
+                ctx.parent_hash,
+                &mut self.evm,
+                chain_id,
+            )?;
+            self.system_caller.apply_beacon_root_contract_call(
+                ctx.parent_beacon_block_root,
+                &mut self.evm,
+                chain_id,
+            )?;
         }
 
         Ok(())
@@ -222,7 +237,11 @@ where
             let drained_balance: u128 = self
                 .evm
                 .db_mut()
-                .drain_balances(dao_fork::DAO_HARDFORK_ACCOUNTS.iter().map(|addr| ChainAddress::new(chain_id, *addr)))
+                .drain_balances(
+                    dao_fork::DAO_HARDFORK_ACCOUNTS
+                        .iter()
+                        .map(|addr| ChainAddress::new(chain_id, *addr)),
+                )
                 .map_err(|_| BlockValidationError::IncrementBalanceFailed)?
                 .into_iter()
                 .sum();
@@ -234,7 +253,11 @@ where
         // increment balances
         self.evm
             .db_mut()
-            .increment_balances(balance_increments.iter().map(|(addr, balance)| (ChainAddress::new(chain_id, *addr), *balance)))
+            .increment_balances(
+                balance_increments
+                    .iter()
+                    .map(|(addr, balance)| (ChainAddress::new(chain_id, *addr), *balance)),
+            )
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
 
         // call state hook with changes due to balance increments.

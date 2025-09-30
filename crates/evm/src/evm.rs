@@ -4,15 +4,21 @@ use crate::{tracing::TxTracer, EvmEnv, EvmError, IntoTxEnv};
 use alloy_primitives::Bytes;
 use core::{error::Error, fmt::Debug, hash::Hash};
 use revm::{
-    context::{result::ExecutionResult, BlockEnv}, context_interface::{
+    context::{result::ExecutionResult, BlockEnv},
+    context_interface::{
         result::{HaltReasonTr, ResultAndState},
         ContextTr,
-    }, database_interface::{MultiChainDatabase, MultiChainDatabaseCommit}, inspector::{JournalExt, NoOpInspector}, primitives::{ChainAddress, HashMap}, Inspector
+    },
+    database_interface::{MultiChainDatabase, MultiChainDatabaseCommit},
+    inspector::{JournalExt, NoOpInspector},
+    primitives::{ChainAddress, HashMap},
+    Inspector,
 };
 
 /// Helper trait to bound [`MultiChainDatabase::Error`] with common requirements.
 pub trait MultiDatabase: MultiChainDatabase<Error: Error + Send + Sync + 'static> + Debug {}
-impl<T> MultiDatabase for T where T: MultiChainDatabase<Error: Error + Send + Sync + 'static> + Debug {}
+impl<T> MultiDatabase for T where T: MultiChainDatabase<Error: Error + Send + Sync + 'static> + Debug
+{}
 
 /// An instance of an ethereum virtual machine.
 ///

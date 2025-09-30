@@ -7,7 +7,15 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use revm::{
-    context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv}, context_interface::result::{EVMError, HaltReason, ResultAndState}, handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider}, inspector::{inspectors::GwynethCompositeInspector, NoOpInspector}, interpreter::{interpreter::EthInterpreter, InterpreterResult}, precompile::{PrecompileSpecId, Precompiles}, primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind}, AutoSetupBuilder, Context, ExecuteEvm, InspectEvm, InspectSystemCallEvm, Inspector, SystemCallEvm
+    context::{BlockEnv, CfgEnv, ContextSetters, Evm as RevmEvm, TxEnv},
+    context_interface::result::{EVMError, HaltReason, ResultAndState},
+    handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider},
+    inspector::{inspectors::GwynethCompositeInspector, NoOpInspector},
+    interpreter::{interpreter::EthInterpreter, InterpreterResult},
+    precompile::{PrecompileSpecId, Precompiles},
+    primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind},
+    AutoSetupBuilder, Context, ExecuteEvm, InspectEvm, InspectSystemCallEvm, Inspector,
+    SystemCallEvm,
 };
 
 mod block;
@@ -22,11 +30,11 @@ pub mod spec;
 pub type EthEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
 
 /// Helper builder to construct `EthEvm` instances in a unified way.
+#[expect(missing_debug_implementations)]
 #[derive(Clone)]
 pub struct EthEvmBuilder<DB: MultiDatabase, I = NoOpInspector> {
     db: DB,
-    block_env: HashMap<u64, BlockEnv>,
-    cfg_env: CfgEnv,
+    env: EvmEnv,
     inspector: I,
     inspect: bool,
     precompiles: Option<PrecompilesMap>,
@@ -35,14 +43,7 @@ pub struct EthEvmBuilder<DB: MultiDatabase, I = NoOpInspector> {
 impl<DB: MultiDatabase> EthEvmBuilder<DB, NoOpInspector> {
     /// Creates a builder from the provided `EvmEnv` and database.
     pub fn new(db: DB, env: EvmEnv) -> Self {
-        Self {
-            db,
-            block_env: env.block_env,
-            cfg_env: env.cfg_env,
-            inspector: NoOpInspector {},
-            inspect: false,
-            precompiles: None,
-        }
+        Self { db, env, inspector: NoOpInspector {}, inspect: false, precompiles: None }
     }
 }
 
@@ -51,8 +52,7 @@ impl<DB: MultiDatabase, I> EthEvmBuilder<DB, I> {
     pub fn inspector<J>(self, inspector: J) -> EthEvmBuilder<DB, J> {
         EthEvmBuilder {
             db: self.db,
-            block_env: self.block_env,
-            cfg_env: self.cfg_env,
+            env: self.env,
             inspector,
             inspect: self.inspect,
             precompiles: self.precompiles,
@@ -87,24 +87,36 @@ impl<DB: MultiDatabase, I> EthEvmBuilder<DB, I> {
     where
         I: Inspector<EthEvmContext<DB>>,
     {
-        let precompiles = match self.precompiles {
+        let EthEvmBuilder { db, env, inspector, inspect, precompiles } = self;
+        let EvmEnv { cfg_env, block_env } = env;
+
+        let precompiles = match precompiles {
             Some(p) => p,
             None => PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(self.cfg_env.spec),
-                self.cfg_env.xchain,
+                PrecompileSpecId::from_spec_id(cfg_env.spec),
+                cfg_env.xchain,
             )),
         };
 
-        let gwyneth_inspector = GwynethCompositeInspector::wrap(self.inspector);
+        let gwyneth_inspector = GwynethCompositeInspector::wrap(inspector);
         let inner = Context::mainnet()
-            .with_blocks(self.block_env)
-            .with_cfg(self.cfg_env)
-            .with_db(self.db)
+            .with_blocks(block_env)
+            .with_cfg(cfg_env)
+            .with_db(db)
             .build_gwyneth_with_inspector(gwyneth_inspector)
             .with_precompiles(precompiles);
 
-        EthEvm { inner, inspect: self.inspect }
+        EthEvm { inner, inspect }
     }
+}
+
+/// Applies multi-chain configuration overrides from the given `EvmEnv` to the provided
+/// `EthEvmContext`.
+pub fn apply_multichain_overrides<DB: MultiDatabase>(ctx: &mut EthEvmContext<DB>, env: &EvmEnv) {
+    ctx.set_blocks(env.block_env.clone());
+    ctx.modify_cfg(|cfg| {
+        *cfg = env.cfg_env.clone();
+    });
 }
 
 /// Ethereum EVM implementation.
@@ -263,7 +275,11 @@ where
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
-        (&self.inner.ctx.journaled_state.database, &self.inner.inspector.custom_inspector, &self.inner.precompiles)
+        (
+            &self.inner.ctx.journaled_state.database,
+            &self.inner.inspector.custom_inspector,
+            &self.inner.precompiles,
+        )
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
@@ -290,7 +306,10 @@ impl EvmFactory for EthEvmFactory {
     type Precompiles = PrecompilesMap;
 
     fn create_evm<DB: MultiDatabase>(&self, db: DB, input: EvmEnv) -> Self::Evm<DB, NoOpInspector> {
-        EthEvmBuilder::new(db, input).build()
+        let env_clone = input.clone();
+        let mut evm = EthEvmBuilder::new(db, env_clone).build();
+        apply_multichain_overrides(evm.ctx_mut(), &input);
+        evm
     }
 
     fn create_evm_with_inspector<DB: MultiDatabase, I: Inspector<Self::Context<DB>>>(
@@ -299,7 +318,10 @@ impl EvmFactory for EthEvmFactory {
         input: EvmEnv,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        EthEvmBuilder::new(db, input).activate_inspector(inspector).build()
+        let env_clone = input.clone();
+        let mut evm = EthEvmBuilder::new(db, env_clone).activate_inspector(inspector).build();
+        apply_multichain_overrides(evm.ctx_mut(), &input);
+        evm
     }
 }
 
@@ -307,7 +329,11 @@ impl EvmFactory for EthEvmFactory {
 mod tests {
     use super::*;
     use alloy_primitives::address;
-    use revm::{database::{MultiEmptyDB, EmptyDB}, primitives::{hardfork::SpecId, HashMap}};
+    use revm::{
+        database::{EmptyDB, MultiEmptyDB},
+        inspector::NoOpInspector,
+        primitives::{hardfork::SpecId, HashMap},
+    };
 
     #[test]
     fn test_precompiles_with_correct_spec() {
@@ -365,5 +391,70 @@ mod tests {
                 "{name} precompile at {precompile_addr:?} should be available for later spec {later_spec:?}"
             );
         }
+    }
+
+    #[test]
+    fn factory_applies_multichain_overrides() {
+        let mut cfg_env = CfgEnv::default();
+        cfg_env.chain_id = 100;
+        cfg_env.xchain = true;
+        cfg_env.parent_chain_id = Some(1);
+        cfg_env.extension_oracle = Some(address!("0x0000000000000000000000000000000000000100"));
+        cfg_env.gwyneth = Some(address!("0x0000000000000000000000000000000000000200"));
+
+        let mut block_map = HashMap::default();
+        block_map.insert(cfg_env.chain_id, BlockEnv::default());
+        block_map.insert(1, BlockEnv::default());
+        let expected_blocks = block_map.clone();
+
+        let env = EvmEnv { block_env: block_map, cfg_env: cfg_env.clone() };
+
+        let factory = EthEvmFactory;
+        let mut multi_db = MultiEmptyDB::new();
+        multi_db.add_chain(1, EmptyDB::default());
+        multi_db.add_chain(cfg_env.chain_id, EmptyDB::default());
+
+        let evm = factory.create_evm(multi_db, env.clone());
+        let ctx = evm.ctx();
+
+        let cfg = &ctx.cfg;
+        assert!(cfg.xchain, "xchain flag should propagate to context");
+        assert_eq!(cfg.parent_chain_id, env.cfg_env.parent_chain_id);
+        assert_eq!(cfg.extension_oracle, env.cfg_env.extension_oracle);
+        assert_eq!(cfg.gwyneth, env.cfg_env.gwyneth);
+        assert_eq!(cfg.chain_id, env.cfg_env.chain_id);
+
+        for chain_id in expected_blocks.keys() {
+            assert!(ctx.block.contains_key(chain_id), "missing block env for chain {}", chain_id);
+        }
+    }
+
+    #[test]
+    fn inspector_factory_keeps_overrides() {
+        let mut cfg_env = CfgEnv::default();
+        cfg_env.chain_id = 200;
+        cfg_env.xchain = true;
+        cfg_env.parent_chain_id = Some(1);
+        cfg_env.extension_oracle = Some(address!("0x0000000000000000000000000000000000000300"));
+
+        let mut block_map = HashMap::default();
+        block_map.insert(cfg_env.chain_id, BlockEnv::default());
+        block_map.insert(1, BlockEnv::default());
+
+        let env = EvmEnv { block_env: block_map, cfg_env: cfg_env.clone() };
+
+        let factory = EthEvmFactory;
+        let mut multi_db = MultiEmptyDB::new();
+        multi_db.add_chain(1, EmptyDB::default());
+        multi_db.add_chain(cfg_env.chain_id, EmptyDB::default());
+
+        let inspector = NoOpInspector {};
+        let evm = factory.create_evm_with_inspector(multi_db, env.clone(), inspector);
+        let ctx = evm.ctx();
+
+        assert!(ctx.cfg.xchain, "xchain flag should persist when using inspector path");
+        assert_eq!(ctx.cfg.parent_chain_id, env.cfg_env.parent_chain_id);
+        assert!(ctx.block.contains_key(&cfg_env.chain_id));
+        assert!(ctx.block.contains_key(&1));
     }
 }

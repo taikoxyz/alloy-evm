@@ -1,8 +1,8 @@
-use alloy_evm::{Evm, EvmEnv, EvmFactory, eth::EthEvmFactory};
+use alloy_evm::{eth::EthEvmFactory, Evm, EvmEnv, EvmFactory};
 use alloy_primitives::{address, Address, U256};
 use revm::{
     context::{BlockEnv, CfgEnv, TxEnv},
-    database::{MultiEmptyDB, EmptyDB},
+    database::{EmptyDB, MultiEmptyDB},
     primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind},
 };
 
@@ -16,7 +16,8 @@ fn test_multichain_support() {
     // Create block environment for the chain
     let mut block = BlockEnv::default();
     block.number = U256::from(1000);
-    block.beneficiary = ChainAddress::new(1, address!("0x0000000000000000000000000000000000000001"));
+    block.beneficiary =
+        ChainAddress::new(1, address!("0x0000000000000000000000000000000000000001"));
 
     let mut block_env = HashMap::default();
     block_env.insert(0, BlockEnv::default()); // Add fallback block
@@ -41,7 +42,10 @@ fn test_multichain_support() {
     // Test 4: Create transaction with ChainAddress
     let tx = TxEnv {
         caller: ChainAddress::new(1, address!("0x1111111111111111111111111111111111111111")),
-        kind: TxKind::Call(ChainAddress::new(1, address!("0x2222222222222222222222222222222222222222"))),
+        kind: TxKind::Call(ChainAddress::new(
+            1,
+            address!("0x2222222222222222222222222222222222222222"),
+        )),
         gas_limit: 21000,
         gas_price: 1000000000,
         value: U256::ZERO,
@@ -73,7 +77,7 @@ fn test_multichain_support() {
     match result {
         Ok(_) => {
             // Call succeeded (empty contract returns successfully)
-        },
+        }
         Err(_) => {
             // Call failed (which is also acceptable with empty DB)
         }
@@ -88,7 +92,8 @@ fn test_basic_evm_creation() {
 
     let mut block = BlockEnv::default();
     block.number = U256::from(5000);
-    block.beneficiary = ChainAddress::new(999, address!("0x0000000000000000000000000000000000000000"));
+    block.beneficiary =
+        ChainAddress::new(999, address!("0x0000000000000000000000000000000000000000"));
 
     let mut block_env = HashMap::default();
     block_env.insert(999, block);

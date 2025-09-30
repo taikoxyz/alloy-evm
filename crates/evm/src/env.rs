@@ -7,7 +7,7 @@ use revm::{
 };
 
 /// Container type that holds both the configuration and block environment for EVM execution.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EvmEnv<Spec = SpecId> {
     /// The configuration environment with handler settings
     pub cfg_env: CfgEnv<Spec>,

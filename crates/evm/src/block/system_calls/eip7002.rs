@@ -8,7 +8,10 @@ use alloc::format;
 use alloy_eips::eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS;
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
-use revm::{context_interface::result::{ExecutionResult, ResultAndState}, primitives::ChainAddress};
+use revm::{
+    context_interface::result::{ExecutionResult, ResultAndState},
+    primitives::ChainAddress,
+};
 
 /// Applies the post-block call to the EIP-7002 withdrawal requests contract.
 ///

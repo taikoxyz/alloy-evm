@@ -60,10 +60,7 @@ impl<DB> OverrideBlockHashes for State<DB> {
         // For multichain support, we need to insert block hashes for the default chain (0)
         // self.block_hashes is BTreeMap<u64 (chain_id), BTreeMap<u64 (block_number), B256>>
         let chain_id = 0u64; // Default chain ID for overrides
-        self.block_hashes
-            .entry(chain_id)
-            .or_insert_with(BTreeMap::new)
-            .extend(block_hashes);
+        self.block_hashes.entry(chain_id).or_insert_with(BTreeMap::new).extend(block_hashes);
     }
 }
 
@@ -137,7 +134,8 @@ where
     DB: MultiChainDatabase + MultiChainDatabaseCommit,
 {
     let chain_addr = revm::primitives::ChainAddress::new(0, account);
-    let mut info = db.basic_multi(chain_addr).map_err(StateOverrideError::Database)?.unwrap_or_default();
+    let mut info =
+        db.basic_multi(chain_addr).map_err(StateOverrideError::Database)?.unwrap_or_default();
 
     if let Some(nonce) = account_override.nonce {
         info.nonce = nonce;

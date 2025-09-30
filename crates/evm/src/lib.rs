@@ -13,7 +13,7 @@ pub mod block;
 pub mod evm;
 pub use evm::{Evm, EvmFactory, MultiDatabase};
 pub mod eth;
-pub use eth::{EthEvm, EthEvmFactory};
+pub use eth::{apply_multichain_overrides, EthEvm, EthEvmFactory};
 pub mod env;
 pub use env::EvmEnv;
 pub mod error;
