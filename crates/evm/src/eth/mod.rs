@@ -17,6 +17,7 @@ use revm::{
     AutoSetupBuilder, Context, ExecuteEvm, InspectEvm, InspectSystemCallEvm, Inspector,
     SystemCallEvm,
 };
+use revm::MainContext;
 
 mod block;
 pub use block::*;
