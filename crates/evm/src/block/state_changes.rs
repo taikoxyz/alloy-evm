@@ -1,11 +1,11 @@
 //! State changes that are not related to transactions.
 
 use super::{calc, BlockExecutionError};
+use crate::MultiDatabase;
 use alloy_consensus::BlockHeader;
 use alloy_eips::eip4895::{Withdrawal, Withdrawals};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{map::HashMap, Address};
-use crate::MultiDatabase;
 use revm::{
     context::BlockEnv,
     database::State,
@@ -109,25 +109,26 @@ pub fn balance_increment_state<DB>(
 where
     DB: MultiDatabase,
 {
-    let mut load_account = |address: &Address| -> Result<(ChainAddress, Account), BlockExecutionError> {
-        let chain_address = ChainAddress::new(chain_id, *address);
-        let cache_account = state.load_cache_account(chain_address).map_err(|_| {
-            BlockExecutionError::msg("could not load account for balance increment")
-        })?;
+    let mut load_account =
+        |address: &Address| -> Result<(ChainAddress, Account), BlockExecutionError> {
+            let chain_address = ChainAddress::new(chain_id, *address);
+            let cache_account = state.load_cache_account(chain_address).map_err(|_| {
+                BlockExecutionError::msg("could not load account for balance increment")
+            })?;
 
-        let account = cache_account.account.as_ref().ok_or_else(|| {
-            BlockExecutionError::msg("could not load account for balance increment")
-        })?;
+            let account = cache_account.account.as_ref().ok_or_else(|| {
+                BlockExecutionError::msg("could not load account for balance increment")
+            })?;
 
-        Ok((
-            chain_address,
-            Account {
-                info: account.info.clone(),
-                storage: Default::default(),
-                status: AccountStatus::Touched,
-            },
-        ))
-    };
+            Ok((
+                chain_address,
+                Account {
+                    info: account.info.clone(),
+                    storage: Default::default(),
+                    status: AccountStatus::Touched,
+                },
+            ))
+        };
 
     balance_increments
         .iter()

@@ -1,7 +1,12 @@
 use alloy_evm::MultiDatabase;
 use alloy_op_hardforks::OpHardforks;
 use alloy_primitives::{address, b256, hex, Address, Bytes, B256};
-use revm::{database::State, database_interface::MultiChainDatabaseCommit, primitives::{ChainAddress, HashMap}, state::Bytecode};
+use revm::{
+    database::State,
+    database_interface::MultiChainDatabaseCommit,
+    primitives::{ChainAddress, HashMap},
+    state::Bytecode,
+};
 
 /// The address of the create2 deployer
 const CREATE_2_DEPLOYER_ADDR: Address = address!("0x13b0D85CcB8bf860b6b79AF3029fCA081AE9beF2");

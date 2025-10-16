@@ -8,13 +8,14 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use revm::{
-    primitives::{MultiChainTxKind as TxKind, HashMap, ChainAddress, hardfork::SpecId},
     context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv},
     context_interface::result::{EVMError, HaltReason, ResultAndState},
     handler::{instructions::EthInstructions, EthPrecompiles, PrecompileProvider},
-    inspector::NoOpInspector, interpreter::{interpreter::EthInterpreter, InterpreterResult},
+    inspector::NoOpInspector,
+    interpreter::{interpreter::EthInterpreter, InterpreterResult},
     precompile::{PrecompileSpecId, Precompiles},
-    Context, ExecuteEvm, InspectEvm, Inspector, MainBuilder, MainContext
+    primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind},
+    Context, ExecuteEvm, InspectEvm, Inspector, MainBuilder, MainContext,
 };
 
 mod block;
@@ -163,7 +164,7 @@ where
         let chain_id = contract.0;
         let chain_ids = self.inner.ctx.block.keys().cloned().collect();
         let tx = TxEnv {
-            caller: caller,
+            caller,
             kind: TxKind::Call(contract),
             // Explicitly set nonce to 0 so revm does not do any nonce checks
             nonce: 0,
@@ -195,7 +196,10 @@ where
         let block_env = if let Some(env) = self.inner.ctx.block.get_mut(&chain_id) {
             env
         } else {
-            self.inner.ctx.block.get_mut(&0)
+            self.inner
+                .ctx
+                .block
+                .get_mut(&0)
                 .expect("No block environment found for chain ID or fallback chain 0")
         };
 
@@ -212,7 +216,10 @@ where
         let block_env = if let Some(env) = self.inner.ctx.block.get_mut(&chain_id) {
             env
         } else {
-            self.inner.ctx.block.get_mut(&0)
+            self.inner
+                .ctx
+                .block
+                .get_mut(&0)
                 .expect("No block environment found for chain ID or fallback chain 0")
         };
 
@@ -325,7 +332,10 @@ impl EvmFactory for EthEvmFactory {
 mod tests {
     use super::*;
     use alloy_primitives::address;
-    use revm::{database::{MultiEmptyDB, EmptyDB}, primitives::{hardfork::SpecId, HashMap}};
+    use revm::{
+        database::{EmptyDB, MultiEmptyDB},
+        primitives::{hardfork::SpecId, HashMap},
+    };
 
     #[test]
     fn test_precompiles_with_correct_spec() {

@@ -15,11 +15,14 @@ pub use block::{OpBlockExecutionCtx, OpBlockExecutor, OpBlockExecutorFactory};
 // Stub implementations since Op code won't be used but needs to compile
 // The real implementation would require MultiChainBlockEnv to implement Block trait
 
-use alloy_evm::{Evm, EvmEnv, EvmFactory, MultiDatabase, InvalidTxError};
+use alloy_evm::{Evm, EvmEnv, EvmFactory, InvalidTxError, MultiDatabase};
 use alloy_primitives::Bytes;
 use revm::{
-    context::{BlockEnv, TxEnv}, context_interface::result::{EVMError, HaltReason, ResultAndState}, 
-    inspector::NoOpInspector, primitives::{hardfork::SpecId, ChainAddress, HashMap}, Inspector
+    context::{BlockEnv, TxEnv},
+    context_interface::result::{EVMError, HaltReason, ResultAndState},
+    inspector::NoOpInspector,
+    primitives::{hardfork::SpecId, ChainAddress, HashMap},
+    Inspector,
 };
 
 // Stub types to avoid op-revm compilation issues
@@ -71,7 +74,10 @@ impl<DB: MultiDatabase, I> Evm for OpEvm<DB, I> {
         1 // Default to mainnet
     }
 
-    fn transact_raw(&mut self, _tx: Self::Tx) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+    fn transact_raw(
+        &mut self,
+        _tx: Self::Tx,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         unimplemented!("OpEvm stub - not for production use")
     }
 
@@ -119,9 +125,11 @@ pub struct OpEvmFactory;
 impl EvmFactory for OpEvmFactory {
     type Evm<DB: MultiDatabase, I: Inspector<Self::Context<DB>>> = OpEvm<DB, I>;
     // Use a simple context type that satisfies bounds
-    type Context<DB: MultiDatabase> = revm::Context<BlockEnv, TxEnv, revm::context::CfgEnv<OpSpecId>, DB>;
+    type Context<DB: MultiDatabase> =
+        revm::Context<BlockEnv, TxEnv, revm::context::CfgEnv<OpSpecId>, DB>;
     type Tx = TxEnv;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTransactionError>;
+    type Error<DBError: core::error::Error + Send + Sync + 'static> =
+        EVMError<DBError, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type Precompiles = ();
@@ -131,10 +139,7 @@ impl EvmFactory for OpEvmFactory {
         _db: DB,
         _input: EvmEnv<OpSpecId>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        OpEvm {
-            _db: core::marker::PhantomData,
-            _inspector: core::marker::PhantomData,
-        }
+        OpEvm { _db: core::marker::PhantomData, _inspector: core::marker::PhantomData }
     }
 
     fn create_evm_with_inspector<DB: MultiDatabase, I: Inspector<Self::Context<DB>>>(
@@ -143,9 +148,6 @@ impl EvmFactory for OpEvmFactory {
         _input: EvmEnv<OpSpecId>,
         _inspector: I,
     ) -> Self::Evm<DB, I> {
-        OpEvm {
-            _db: core::marker::PhantomData,
-            _inspector: core::marker::PhantomData,
-        }
+        OpEvm { _db: core::marker::PhantomData, _inspector: core::marker::PhantomData }
     }
 }

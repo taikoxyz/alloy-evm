@@ -4,10 +4,15 @@ use crate::{EvmEnv, EvmError, IntoTxEnv};
 use alloy_primitives::Bytes;
 use core::{error::Error, fmt::Debug, hash::Hash};
 use revm::{
-    context::{result::ExecutionResult, BlockEnv}, context_interface::{
+    context::{result::ExecutionResult, BlockEnv},
+    context_interface::{
         result::{HaltReasonTr, ResultAndState},
         ContextTr,
-    }, database_interface::{MultiChainDatabase, MultiChainDatabaseCommit}, inspector::{JournalExt, NoOpInspector}, primitives::{ChainAddress, HashMap}, Inspector
+    },
+    database_interface::{MultiChainDatabase, MultiChainDatabaseCommit},
+    inspector::{JournalExt, NoOpInspector},
+    primitives::{ChainAddress, HashMap},
+    Inspector,
 };
 
 /// Helper trait to bound [`MultiChainDatabase::Error`] with common requirements.

@@ -6,8 +6,11 @@ use crate::{
 use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip7685::Requests;
 use revm::{
-    context::result::ExecutionResult, database::State, inspector::NoOpInspector,
-    primitives::{HashMap, StateChanges}, Inspector
+    context::result::ExecutionResult,
+    database::State,
+    inspector::NoOpInspector,
+    primitives::{HashMap, StateChanges},
+    Inspector,
 };
 
 mod error;

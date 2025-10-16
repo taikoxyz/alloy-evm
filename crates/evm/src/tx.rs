@@ -10,7 +10,11 @@ use alloy_eips::{
     Typed2718,
 };
 use alloy_primitives::{Address, Bytes, TxKind as PrimitiveTxKind};
-use revm::{context::TxEnv, context_interface::either::Either, primitives::{ChainAddress, MultiChainTxKind as TxKind}};
+use revm::{
+    context::TxEnv,
+    context_interface::either::Either,
+    primitives::{ChainAddress, MultiChainTxKind as TxKind},
+};
 
 /// Trait marking types that can be converted into a transaction environment.
 pub trait IntoTxEnv<TxEnv> {
@@ -72,7 +76,9 @@ impl FromRecoveredTx<TxLegacy> for TxEnv {
             gas_limit: *gas_limit,
             gas_price: *gas_price,
             kind: match *to {
-                PrimitiveTxKind::Call(addr) => TxKind::Call(ChainAddress::new(resolved_chain_id, addr)),
+                PrimitiveTxKind::Call(addr) => {
+                    TxKind::Call(ChainAddress::new(resolved_chain_id, addr))
+                }
                 PrimitiveTxKind::Create => TxKind::Create,
             },
             value: *value,
@@ -414,7 +420,9 @@ mod op {
                 caller: ChainAddress::new(1, caller),
                 gas_limit: *gas_limit,
                 kind: match *to {
-                    alloy_primitives::TxKind::Call(addr) => TxKind::Call(ChainAddress::new(1, addr)),
+                    alloy_primitives::TxKind::Call(addr) => {
+                        TxKind::Call(ChainAddress::new(1, addr))
+                    }
                     alloy_primitives::TxKind::Create => TxKind::Create,
                 },
                 value: *value,

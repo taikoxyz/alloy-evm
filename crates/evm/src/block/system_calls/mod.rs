@@ -92,8 +92,12 @@ where
         evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
         chain_id: u64,
     ) -> Result<(), BlockExecutionError> {
-        let result_and_state =
-            eip2935::transact_blockhashes_contract_call(&self.spec, parent_block_hash, evm, chain_id)?;
+        let result_and_state = eip2935::transact_blockhashes_contract_call(
+            &self.spec,
+            parent_block_hash,
+            evm,
+            chain_id,
+        )?;
 
         if let Some(res) = result_and_state {
             if let Some(hook) = &mut self.hook {
@@ -115,8 +119,12 @@ where
         evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
         chain_id: u64,
     ) -> Result<(), BlockExecutionError> {
-        let result_and_state =
-            eip4788::transact_beacon_root_contract_call(&self.spec, parent_beacon_block_root, evm, chain_id)?;
+        let result_and_state = eip4788::transact_beacon_root_contract_call(
+            &self.spec,
+            parent_beacon_block_root,
+            evm,
+            chain_id,
+        )?;
 
         if let Some(res) = result_and_state {
             if let Some(hook) = &mut self.hook {
