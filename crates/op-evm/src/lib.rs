@@ -9,200 +9,138 @@
 
 extern crate alloc;
 
-use alloy_evm::{precompiles::PrecompilesMap, Database, Evm, EvmEnv, EvmFactory};
-use alloy_primitives::{Address, Bytes};
-use core::{
-    fmt::Debug,
-    ops::{Deref, DerefMut},
-};
-use op_revm::{
-    precompiles::OpPrecompiles, DefaultOp, OpBuilder, OpContext, OpHaltReason, OpSpecId,
-    OpTransaction, OpTransactionError,
-};
-use revm::{
-    context::{BlockEnv, TxEnv},
-    context_interface::result::{EVMError, ResultAndState},
-    handler::{instructions::EthInstructions, PrecompileProvider},
-    inspector::NoOpInspector,
-    interpreter::{interpreter::EthInterpreter, InterpreterResult},
-    Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-};
-
 pub mod block;
 pub use block::{OpBlockExecutionCtx, OpBlockExecutor, OpBlockExecutorFactory};
 
-/// OP EVM implementation.
-///
-/// This is a wrapper type around the `revm` evm with optional [`Inspector`] (tracing)
-/// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
-/// [`OpEvm`](op_revm::OpEvm) type.
-#[allow(missing_debug_implementations)] // missing revm::OpContext Debug impl
-pub struct OpEvm<DB: Database, I, P = OpPrecompiles> {
-    inner: op_revm::OpEvm<OpContext<DB>, I, EthInstructions<EthInterpreter, OpContext<DB>>, P>,
-    inspect: bool,
-}
+// Stub implementations since Op code won't be used but needs to compile
+// The real implementation would require MultiChainBlockEnv to implement Block trait
 
-impl<DB: Database, I, P> OpEvm<DB, I, P> {
-    /// Provides a reference to the EVM context.
-    pub const fn ctx(&self) -> &OpContext<DB> {
-        &self.inner.0.ctx
-    }
+use alloy_evm::{Evm, EvmEnv, EvmFactory, InvalidTxError, MultiDatabase};
+use alloy_primitives::Bytes;
+use revm::context_interface::result::InvalidTransaction;
+use revm::{
+    context::{BlockEnv, TxEnv},
+    context_interface::result::{EVMError, HaltReason, ResultAndState},
+    inspector::NoOpInspector,
+    primitives::{hardfork::SpecId, ChainAddress, HashMap},
+    Inspector,
+};
 
-    /// Provides a mutable reference to the EVM context.
-    pub fn ctx_mut(&mut self) -> &mut OpContext<DB> {
-        &mut self.inner.0.ctx
-    }
-}
+// Stub types to avoid op-revm compilation issues
+/// Stub OpHaltReason - uses regular HaltReason
+pub type OpHaltReason = HaltReason;
 
-impl<DB: Database, I, P> OpEvm<DB, I, P> {
-    /// Creates a new OP EVM instance.
-    ///
-    /// The `inspect` argument determines whether the configured [`Inspector`] of the given
-    /// [`OpEvm`](op_revm::OpEvm) should be invoked on [`Evm::transact`].
-    pub const fn new(
-        evm: op_revm::OpEvm<OpContext<DB>, I, EthInstructions<EthInterpreter, OpContext<DB>>, P>,
-        inspect: bool,
-    ) -> Self {
-        Self { inner: evm, inspect }
+/// Stub OpSpecId - uses regular SpecId
+pub type OpSpecId = SpecId;
+
+/// Stub OpTransactionError
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpTransactionError;
+
+impl core::fmt::Display for OpTransactionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "OpTransactionError stub")
     }
 }
 
-impl<DB: Database, I, P> Deref for OpEvm<DB, I, P> {
-    type Target = OpContext<DB>;
+impl core::error::Error for OpTransactionError {}
 
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.ctx()
+impl InvalidTxError for OpTransactionError {
+    fn is_nonce_too_low(&self) -> bool {
+        false // Stub implementation
+    }
+
+    fn as_invalid_tx_err(&self) -> Option<&InvalidTransaction> {
+        None // Stub implementation
     }
 }
 
-impl<DB: Database, I, P> DerefMut for OpEvm<DB, I, P> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.ctx_mut()
-    }
+/// Stub OP EVM implementation
+#[derive(Debug)]
+pub struct OpEvm<DB, I> {
+    _db: core::marker::PhantomData<DB>,
+    _inspector: core::marker::PhantomData<I>,
 }
 
-impl<DB, I, P> Evm for OpEvm<DB, I, P>
-where
-    DB: Database,
-    I: Inspector<OpContext<DB>>,
-    P: PrecompileProvider<OpContext<DB>, Output = InterpreterResult>,
-{
+impl<DB: MultiDatabase, I> Evm for OpEvm<DB, I> {
     type DB = DB;
-    type Tx = OpTransaction<TxEnv>;
+    type Tx = TxEnv;
     type Error = EVMError<DB::Error, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
-    type Precompiles = P;
+    type Precompiles = ();
     type Inspector = I;
 
-    fn block(&self) -> &BlockEnv {
-        &self.block
+    fn blocks(&self) -> &HashMap<u64, BlockEnv> {
+        unimplemented!("OpEvm stub - not for production use")
     }
 
     fn chain_id(&self) -> u64 {
-        self.cfg.chain_id
+        1 // Default to mainnet
     }
 
     fn transact_raw(
         &mut self,
-        tx: Self::Tx,
+        _tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect {
-            self.inner.inspect_tx(tx)
-        } else {
-            self.inner.transact(tx)
-        }
+        unimplemented!("OpEvm stub - not for production use")
     }
 
     fn transact_system_call(
         &mut self,
-        caller: Address,
-        contract: Address,
-        data: Bytes,
+        _caller: ChainAddress,
+        _contract: ChainAddress,
+        _data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        self.inner.system_call_with_caller(caller, contract, data)
+        unimplemented!("OpEvm stub - not for production use")
     }
 
-    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.0.ctx;
-
-        (journaled_state.database, EvmEnv { block_env, cfg_env })
+    fn finish(self) -> (DB, EvmEnv<Self::Spec>) {
+        unimplemented!("OpEvm stub - not for production use")
     }
 
-    fn set_inspector_enabled(&mut self, enabled: bool) {
-        self.inspect = enabled;
-    }
+    fn set_inspector_enabled(&mut self, _enabled: bool) {}
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
-        (
-            &self.inner.0.ctx.journaled_state.database,
-            &self.inner.0.inspector,
-            &self.inner.0.precompiles,
-        )
+        unimplemented!("OpEvm stub - not for production use")
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
-        (
-            &mut self.inner.0.ctx.journaled_state.database,
-            &mut self.inner.0.inspector,
-            &mut self.inner.0.precompiles,
-        )
+        unimplemented!("OpEvm stub - not for production use")
     }
 }
 
-/// Factory producing [`OpEvm`]s.
+/// Stub factory for OpEvm
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct OpEvmFactory;
 
 impl EvmFactory for OpEvmFactory {
-    type Evm<DB: Database, I: Inspector<OpContext<DB>>> = OpEvm<DB, I, Self::Precompiles>;
-    type Context<DB: Database> = OpContext<DB>;
-    type Tx = OpTransaction<TxEnv>;
+    type Evm<DB: MultiDatabase, I: Inspector<Self::Context<DB>>> = OpEvm<DB, I>;
+    // Use a simple context type that satisfies bounds
+    type Context<DB: MultiDatabase> =
+        revm::Context<BlockEnv, TxEnv, revm::context::CfgEnv<OpSpecId>, DB>;
+    type Tx = TxEnv;
     type Error<DBError: core::error::Error + Send + Sync + 'static> =
         EVMError<DBError, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
-    type Precompiles = PrecompilesMap;
+    type Precompiles = ();
 
-    fn create_evm<DB: Database>(
+    fn create_evm<DB: MultiDatabase>(
         &self,
-        db: DB,
-        input: EvmEnv<OpSpecId>,
+        _db: DB,
+        _input: EvmEnv<OpSpecId>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let spec_id = input.cfg_env.spec;
-        OpEvm {
-            inner: Context::op()
-                .with_db(db)
-                .with_block(input.block_env)
-                .with_cfg(input.cfg_env)
-                .build_op_with_inspector(NoOpInspector {})
-                .with_precompiles(PrecompilesMap::from_static(
-                    OpPrecompiles::new_with_spec(spec_id).precompiles(),
-                )),
-            inspect: false,
-        }
+        OpEvm { _db: core::marker::PhantomData, _inspector: core::marker::PhantomData }
     }
 
-    fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
+    fn create_evm_with_inspector<DB: MultiDatabase, I: Inspector<Self::Context<DB>>>(
         &self,
-        db: DB,
-        input: EvmEnv<OpSpecId>,
-        inspector: I,
+        _db: DB,
+        _input: EvmEnv<OpSpecId>,
+        _inspector: I,
     ) -> Self::Evm<DB, I> {
-        let spec_id = input.cfg_env.spec;
-        OpEvm {
-            inner: Context::op()
-                .with_db(db)
-                .with_block(input.block_env)
-                .with_cfg(input.cfg_env)
-                .build_op_with_inspector(inspector)
-                .with_precompiles(PrecompilesMap::from_static(
-                    OpPrecompiles::new_with_spec(spec_id).precompiles(),
-                )),
-            inspect: true,
-        }
+        OpEvm { _db: core::marker::PhantomData, _inspector: core::marker::PhantomData }
     }
 }

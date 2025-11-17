@@ -8,7 +8,7 @@ use alloc::string::ToString;
 use alloy_eips::eip2935::HISTORY_STORAGE_ADDRESS;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::B256;
-use revm::context_interface::result::ResultAndState;
+use revm::{context_interface::result::ResultAndState, primitives::ChainAddress};
 
 /// Applies the pre-block call to the [EIP-2935] blockhashes contract, using the given block,
 /// chain specification, and EVM.
@@ -27,6 +27,7 @@ pub(crate) fn transact_blockhashes_contract_call<Halt>(
     spec: impl EthereumHardforks,
     parent_block_hash: B256,
     evm: &mut impl Evm<HaltReason = Halt>,
+    chain_id: u64,
 ) -> Result<Option<ResultAndState<Halt>>, BlockExecutionError> {
     if !spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to()) {
         return Ok(None);
@@ -39,8 +40,8 @@ pub(crate) fn transact_blockhashes_contract_call<Halt>(
     }
 
     let res = match evm.transact_system_call(
-        alloy_eips::eip4788::SYSTEM_ADDRESS,
-        HISTORY_STORAGE_ADDRESS,
+        ChainAddress(chain_id, alloy_eips::eip4788::SYSTEM_ADDRESS),
+        ChainAddress(chain_id, HISTORY_STORAGE_ADDRESS),
         parent_block_hash.0.into(),
     ) {
         Ok(res) => res,

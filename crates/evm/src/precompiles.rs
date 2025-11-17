@@ -1,15 +1,18 @@
 //! Helpers for dealing with Precompiles.
 
-use crate::{Database, EvmInternals};
+use crate::EvmInternals;
+use alloc::format;
 use alloc::{borrow::Cow, boxed::Box, string::String, sync::Arc};
 use alloy_consensus::transaction::Either;
 use alloy_primitives::{
+    self as primitives,
     map::{HashMap, HashSet},
     Address, Bytes, U256,
 };
 use core::fmt::Debug;
 use revm::{
     context::LocalContextTr,
+    context_interface::ContextTr,
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInput, Gas, InputsImpl, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileFn, PrecompileId, PrecompileResult, Precompiles},
@@ -352,11 +355,12 @@ where
     BlockEnv: revm::context::Block,
     TxEnv: revm::context::Transaction,
     CfgEnv: revm::context::Cfg,
-    DB: Database,
+    DB: revm::database_interface::MultiChainDatabase + Debug,
+    DB::Error: Send + Sync + 'static,
 {
     type Output = InterpreterResult;
 
-    fn set_spec(&mut self, _spec: CfgEnv::Spec) -> bool {
+    fn set_spec(&mut self, _spec: CfgEnv::Spec, _xchain: bool) -> bool {
         false
     }
 
@@ -379,37 +383,66 @@ where
             output: Bytes::new(),
         };
 
-        let (local, journal) = (&context.local, &mut context.journaled_state);
-
         // Execute the precompile
-        let r;
-        let input_bytes = match &inputs.input {
-            CallInput::SharedBuffer(range) => {
-                // `map_or` does not work here as we use `r` to extend lifetime of the slice
-                // and return it.
-                #[allow(clippy::option_if_let_else)]
-                if let Some(slice) = local.shared_memory_buffer_slice(range.clone()) {
-                    r = slice;
-                    &*r
-                } else {
-                    &[]
-                }
-            }
-            CallInput::Bytes(bytes) => bytes.as_ref(),
-        };
+        let precompile_result = {
+            let (local, journal) = (&context.local, &mut context.journaled_state);
 
-        let precompile_result = precompile.call(PrecompileInput {
-            data: input_bytes,
-            gas: gas_limit,
-            caller: inputs.caller_address,
-            value: inputs.call_value,
-            internals: EvmInternals::new(journal, &context.block),
-            target_address: inputs.target_address,
-            bytecode_address: inputs.bytecode_address.expect("always set for precompile calls"),
-        });
+            let r;
+            let input_bytes = match &inputs.input {
+                CallInput::SharedBuffer(range) => {
+                    // `map_or` does not work here as we use `r` to extend lifetime of the slice
+                    // and return it.
+                    #[allow(clippy::option_if_let_else)]
+                    if let Some(slice) = local.shared_memory_buffer_slice(range.clone()) {
+                        r = slice;
+                        &*r
+                    } else {
+                        &[]
+                    }
+                }
+                CallInput::Bytes(bytes) => bytes.as_ref(),
+            };
+
+            // Get the BlockEnv for the chain of the caller
+            let chain_id = inputs.caller_address.0;
+            let block_env = context
+                .block
+                .get(&chain_id)
+                .ok_or_else(|| format!("No block environment for chain {}", chain_id))?;
+
+            precompile.call(PrecompileInput {
+                data: input_bytes,
+                gas: gas_limit,
+                caller: inputs.caller_address.1, // Extract Address from ChainAddress
+                value: inputs.call_value,
+                internals: EvmInternals::new(journal, block_env, chain_id),
+                target_address: inputs.target_address.1, // Extract Address from ChainAddress
+                bytecode_address: inputs
+                    .bytecode_address
+                    .expect("always set for precompile calls")
+                    .1, // Extract Address from ChainAddress
+            })
+        };
 
         match precompile_result {
             Ok(output) => {
+                // Store call options in the context if the precompile set them (XCALLOPTIONS)
+                if let Some(call_options) = output.call_options {
+                    // Validate chain_id for XCALLOPTIONS precompile
+                    let is_xcalloptions = address
+                        == &primitives::address!("00000000000000000000000000000000000004d2");
+                    if is_xcalloptions {
+                        let allowed_chains = context.tx().allowed_chain_ids();
+                        if !allowed_chains.is_empty()
+                            && !allowed_chains.contains(&call_options.to.0)
+                        {
+                            result.result = InstructionResult::PrecompileError;
+                            return Ok(Some(result));
+                        }
+                    }
+                    context.local_mut().set_call_options(call_options);
+                }
+
                 let underflow = result.gas.record_cost(output.gas_used);
                 assert!(underflow, "Gas underflow is not possible");
                 result.result = if output.reverted {
@@ -767,12 +800,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eth::EthEvmContext;
     use alloy_primitives::{address, Bytes};
     use revm::{
         context::Block,
-        database::EmptyDB,
+        database::{EmptyDB, MultiEmptyDB},
         precompile::{PrecompileId, PrecompileOutput},
+        Context, MainBuilder,
     };
 
     #[test]
@@ -780,7 +813,9 @@ mod tests {
         let eth_precompiles = EthPrecompiles::default();
         let mut spec_precompiles = PrecompilesMap::from(eth_precompiles);
 
-        let mut ctx = EthEvmContext::new(EmptyDB::default(), Default::default());
+        let mut multi_db = MultiEmptyDB::new();
+        multi_db.add_chain(1, EmptyDB::default());
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         // create a test input for the precompile (identity precompile)
         let identity_address = address!("0x0000000000000000000000000000000000000004");
@@ -798,13 +833,15 @@ mod tests {
             _ => panic!("Expected dynamic precompiles"),
         };
 
+        let chain_id = 1u64;
+        let block = ctx.block.get(&chain_id).cloned().unwrap_or_default();
         let result = dyn_precompile
             .call(PrecompileInput {
                 data: &test_input,
                 gas: gas_limit,
                 caller: Address::ZERO,
                 value: U256::ZERO,
-                internals: EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                internals: EvmInternals::new(&mut ctx.journaled_state, &block, chain_id),
                 target_address: identity_address,
                 bytecode_address: identity_address,
             })
@@ -832,13 +869,15 @@ mod tests {
             _ => panic!("Expected dynamic precompiles"),
         };
 
+        let chain_id = 1u64;
+        let block = ctx.block.get(&chain_id).cloned().unwrap_or_default();
         let result = dyn_precompile
             .call(PrecompileInput {
                 data: &test_input,
                 gas: gas_limit,
                 caller: Address::ZERO,
                 value: U256::ZERO,
-                internals: EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                internals: EvmInternals::new(&mut ctx.journaled_state, &block, chain_id),
                 target_address: identity_address,
                 bytecode_address: identity_address,
             })
@@ -855,7 +894,9 @@ mod tests {
         let expected_output = Bytes::from_static(b"processed: test data");
         let gas_limit = 1000;
 
-        let mut ctx = EthEvmContext::new(EmptyDB::default(), Default::default());
+        let mut multi_db = MultiEmptyDB::new();
+        multi_db.add_chain(1, EmptyDB::default());
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         // define a closure that implements the precompile functionality
         let closure_precompile = |input: PrecompileInput<'_>| -> PrecompileResult {
@@ -867,13 +908,15 @@ mod tests {
 
         let dyn_precompile: DynPrecompile = closure_precompile.into();
 
+        let chain_id = 1u64;
+        let block = ctx.block.get(&chain_id).cloned().unwrap_or_default();
         let result = dyn_precompile
             .call(PrecompileInput {
                 data: &test_input,
                 gas: gas_limit,
                 caller: Address::ZERO,
                 value: U256::ZERO,
-                internals: EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                internals: EvmInternals::new(&mut ctx.journaled_state, &block, chain_id),
                 target_address: Address::ZERO,
                 bytecode_address: Address::ZERO,
             })
@@ -909,7 +952,9 @@ mod tests {
         let eth_precompiles = EthPrecompiles::default();
         let mut spec_precompiles = PrecompilesMap::from(eth_precompiles);
 
-        let mut ctx = EthEvmContext::new(EmptyDB::default(), Default::default());
+        let mut multi_db = MultiEmptyDB::new();
+        multi_db.add_chain(1, EmptyDB::default());
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         // Define a custom address pattern for dynamic precompiles
         let dynamic_prefix = [0xDE, 0xAD];
@@ -922,6 +967,7 @@ mod tests {
                         gas_used: 100,
                         bytes: Bytes::from("dynamic precompile response"),
                         reverted: false,
+                        call_options: None,
                     })
                 }))
             } else {
@@ -939,6 +985,8 @@ mod tests {
         assert!(dynamic_precompile.is_some(), "Dynamic precompile should be found");
 
         // Execute the dynamic precompile
+        let chain_id = 1u64;
+        let block = ctx.block.get(&chain_id).cloned().unwrap_or_default();
         let result = dynamic_precompile
             .unwrap()
             .call(PrecompileInput {
@@ -946,7 +994,7 @@ mod tests {
                 gas: 1000,
                 caller: Address::ZERO,
                 value: U256::ZERO,
-                internals: EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                internals: EvmInternals::new(&mut ctx.journaled_state, &block, chain_id),
                 target_address: dynamic_address,
                 bytecode_address: dynamic_address,
             })
@@ -964,7 +1012,9 @@ mod tests {
         let eth_precompiles = EthPrecompiles::default();
         let spec_precompiles = PrecompilesMap::from(eth_precompiles);
 
-        let mut ctx = EthEvmContext::new(EmptyDB::default(), Default::default());
+        let mut multi_db = MultiEmptyDB::new();
+        multi_db.add_chain(1, EmptyDB::default());
+        let mut ctx = Context::mainnet().with_db(multi_db).build_mainnet();
 
         let identity_address = address!("0x0000000000000000000000000000000000000004");
         let test_input = Bytes::from_static(b"test data");
@@ -973,6 +1023,8 @@ mod tests {
         let precompile = spec_precompiles.get(&identity_address);
         assert!(precompile.is_some(), "Identity precompile should exist");
 
+        let chain_id = 1u64;
+        let block = ctx.block.get(&chain_id).cloned().unwrap_or_default();
         let result = precompile
             .unwrap()
             .call(PrecompileInput {
@@ -982,7 +1034,7 @@ mod tests {
                 value: U256::ZERO,
                 target_address: identity_address,
                 bytecode_address: identity_address,
-                internals: EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                internals: EvmInternals::new(&mut ctx.journaled_state, &block, chain_id),
             })
             .unwrap();
         assert_eq!(result.bytes, test_input, "Identity precompile should return the input data");
@@ -1002,6 +1054,8 @@ mod tests {
             "Identity precompile should exist after conversion to dynamic"
         );
 
+        let chain_id = 1u64;
+        let block = ctx.block.get(&chain_id).cloned().unwrap_or_default();
         let result = dyn_precompile
             .unwrap()
             .call(PrecompileInput {
@@ -1009,7 +1063,7 @@ mod tests {
                 gas: gas_limit,
                 caller: Address::ZERO,
                 value: U256::ZERO,
-                internals: EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                internals: EvmInternals::new(&mut ctx.journaled_state, &block, chain_id),
                 target_address: identity_address,
                 bytecode_address: identity_address,
             })

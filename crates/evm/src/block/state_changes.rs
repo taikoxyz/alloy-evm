@@ -1,6 +1,7 @@
 //! State changes that are not related to transactions.
 
 use super::{calc, BlockExecutionError};
+use crate::MultiDatabase;
 use alloy_consensus::BlockHeader;
 use alloy_eips::eip4895::{Withdrawal, Withdrawals};
 use alloy_hardforks::EthereumHardforks;
@@ -8,8 +9,8 @@ use alloy_primitives::{map::HashMap, Address};
 use revm::{
     context::BlockEnv,
     database::State,
-    state::{Account, AccountStatus, EvmState},
-    Database,
+    primitives::ChainAddress,
+    state::{Account, AccountStatus, EvmState, WarmTracker},
 };
 
 /// Collect all balance changes at the end of the block.
@@ -45,7 +46,7 @@ where
         }
 
         // Full block reward
-        *balance_increments.entry(block_env.beneficiary).or_default() +=
+        *balance_increments.entry(block_env.beneficiary.address()).or_default() +=
             calc::block_reward(base_block_reward, ommers.len());
     }
 
@@ -111,29 +112,33 @@ pub fn insert_post_block_withdrawals_balance_increments(
 pub fn balance_increment_state<DB>(
     balance_increments: &HashMap<Address, u128>,
     state: &mut State<DB>,
+    chain_id: u64,
 ) -> Result<EvmState, BlockExecutionError>
 where
-    DB: Database,
+    DB: MultiDatabase,
 {
-    let mut load_account = |address: &Address| -> Result<(Address, Account), BlockExecutionError> {
-        let cache_account = state.load_cache_account(*address).map_err(|_| {
-            BlockExecutionError::msg("could not load account for balance increment")
-        })?;
+    let mut load_account =
+        |address: &Address| -> Result<(ChainAddress, Account), BlockExecutionError> {
+            let chain_address = ChainAddress::new(chain_id, *address);
+            let cache_account = state.load_cache_account(chain_address).map_err(|_| {
+                BlockExecutionError::msg("could not load account for balance increment")
+            })?;
 
-        let account = cache_account.account.as_ref().ok_or_else(|| {
-            BlockExecutionError::msg("could not load account for balance increment")
-        })?;
+            let account = cache_account.account.as_ref().ok_or_else(|| {
+                BlockExecutionError::msg("could not load account for balance increment")
+            })?;
 
-        Ok((
-            *address,
-            Account {
-                info: account.info.clone(),
-                storage: Default::default(),
-                status: AccountStatus::Touched,
-                transaction_id: 0,
-            },
-        ))
-    };
+            Ok((
+                chain_address,
+                Account {
+                    info: account.info.clone(),
+                    storage: Default::default(),
+                    status: AccountStatus::Touched,
+                    transaction_id: 0,
+                    warm_tracker: WarmTracker::default(),
+                },
+            ))
+        };
 
     balance_increments
         .iter()

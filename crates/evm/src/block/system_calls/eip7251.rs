@@ -8,7 +8,10 @@ use alloc::format;
 use alloy_eips::eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS;
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
-use revm::context_interface::result::{ExecutionResult, ResultAndState};
+use revm::{
+    context_interface::result::{ExecutionResult, ResultAndState},
+    primitives::ChainAddress,
+};
 
 /// Applies the post-block call to the EIP-7251 consolidation requests contract.
 ///
@@ -30,8 +33,8 @@ pub(crate) fn transact_consolidation_requests_contract_call<Halt>(
     // clienst software MUST [..] call the contract as `SYSTEM_ADDRESS` and empty input data to
     // trigger the system subroutine execute.
     let res = match evm.transact_system_call(
-        alloy_eips::eip7002::SYSTEM_ADDRESS,
-        CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+        ChainAddress(evm.chain_id(), alloy_eips::eip7002::SYSTEM_ADDRESS),
+        ChainAddress(evm.chain_id(), CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS),
         Bytes::new(),
     ) {
         Ok(res) => res,

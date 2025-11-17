@@ -53,8 +53,8 @@ alloy-op-hardforks = { version = "0.3" }
 op-alloy-consensus = { version = "0.19", default-features = false }
 
 # revm
-revm = { version = "29.0.0", default-features = false }
-op-revm = { version = "10.0.0", default-features = false }
+revm = { git = "https://github.com/taikoxyz/revm-private", branch = "v86-gwyneth", default-features = false }
+# op-revm = { git = "https://github.com/taikoxyz/revm-private", branch = "v75-gwyneth-claude", default-features = false } # Disabled - incompatible with multi-chain architecture
 
 # misc
 auto_impl = "1"
