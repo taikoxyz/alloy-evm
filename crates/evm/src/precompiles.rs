@@ -317,6 +317,13 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for PrecompilesMap {
 #[derive(Clone)]
 pub struct DynPrecompile(pub(crate) Arc<dyn Precompile + Send + Sync>);
 
+impl DynPrecompile {
+    /// Create a new dynamic precompile from any type that implements the Precompile trait.
+    pub fn new<P: Precompile + Send + Sync + 'static>(precompile: P) -> Self {
+        Self(Arc::new(precompile))
+    }
+}
+
 impl core::fmt::Debug for DynPrecompile {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DynPrecompile").finish()
