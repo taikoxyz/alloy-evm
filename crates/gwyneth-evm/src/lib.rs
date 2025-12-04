@@ -98,6 +98,105 @@ where
     fn ctx_mut(&mut self) -> &mut InnerContext<DB> {
         &mut self.inner.ctx
     }
+
+    /// Get a reference to the Gwyneth journal.
+    ///
+    /// The journal tracks cross-chain calls, gas usage per chain,
+    /// and other Gwyneth-specific execution data.
+    pub fn gwyneth_journal(&self) -> &gwyneth_types::GwynethJournal {
+        &self.inner.ctx.journal
+    }
+
+    /// Get a mutable reference to the Gwyneth journal.
+    pub fn gwyneth_journal_mut(&mut self) -> &mut gwyneth_types::GwynethJournal {
+        &mut self.inner.ctx.journal
+    }
+
+    /// Clone the current Gwyneth journal.
+    ///
+    /// This is useful for capturing the journal state after transaction execution.
+    /// Note: This clones the journal without populating accounts_per_chain.
+    /// Use `clone_gwyneth_journal_with_accounts` if you need per-chain account tracking.
+    pub fn clone_gwyneth_journal(&self) -> gwyneth_types::GwynethJournal {
+        self.inner.ctx.journal.clone()
+    }
+
+    /// Clone the Gwyneth journal and populate accounts_per_chain from the tracking journal.
+    ///
+    /// This is the recommended method for capturing the journal state when you need
+    /// per-chain state root calculation. It copies the address-to-chain mapping from
+    /// the `TrackingJournal` into the `GwynethJournal.accounts_per_chain` field.
+    pub fn clone_gwyneth_journal_with_accounts(&self) -> gwyneth_types::GwynethJournal {
+        let mut journal = self.inner.ctx.journal.clone();
+        // Copy accounts_per_chain from TrackingJournal
+        journal.accounts_per_chain = self.tracking_journal().accounts_per_chain();
+        journal
+    }
+
+    /// Get a reference to the underlying database.
+    pub fn db(&self) -> &DB {
+        self.inner.ctx.base.journaled_state.db()
+    }
+
+    /// Get a mutable reference to the underlying database.
+    pub fn db_mut(&mut self) -> &mut DB {
+        self.inner.ctx.base.journaled_state.db_mut()
+    }
+
+    /// Get a reference to the tracking journal.
+    ///
+    /// The tracking journal captures per-chain state changes during cross-chain
+    /// execution.
+    pub fn tracking_journal(&self) -> &TrackingJournal<DB> {
+        &self.inner.ctx.base.journaled_state
+    }
+
+    /// Get a mutable reference to the tracking journal.
+    pub fn tracking_journal_mut(&mut self) -> &mut TrackingJournal<DB> {
+        &mut self.inner.ctx.base.journaled_state
+    }
+
+    /// Commit state changes with multi-chain support.
+    ///
+    /// This method properly handles cross-chain state changes by:
+    /// 1. Getting per-chain state from the tracking journal
+    /// 2. Switching to each chain and committing its changes
+    /// 3. Restoring the original chain
+    ///
+    /// This is the correct way to commit state after executing transactions
+    /// that may have cross-chain effects.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The state to commit (used as fallback if no per-chain tracking)
+    pub fn commit_multi_chain(&mut self, state: revm::state::EvmState)
+    where
+        DB: revm::database_interface::DatabaseCommit,
+    {
+        // Try to get per-chain state from the tracking journal
+        let per_chain_opt = self.tracking_journal_mut().take_last_per_chain_state();
+
+        if let Some(per_chain) = per_chain_opt {
+            // Save the original chain ID to restore later
+            let original_chain_id = self.db().current_chain_id();
+
+            // Commit changes to each chain
+            for (chain_id, changes) in per_chain {
+                // Switch to target chain and commit
+                if self.db_mut().switch_to_chain(chain_id).is_ok() {
+                    self.db_mut().commit(changes);
+                }
+                // If switch fails, skip committing these changes
+                // (chain may not be registered in the overlay)
+            }
+
+            // Restore the original chain ID
+            let _ = self.db_mut().switch_to_chain(original_chain_id);
+        } else {
+            // Fallback: commit whole state to current chain
+            self.db_mut().commit(state);
+        }
+    }
 }
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
