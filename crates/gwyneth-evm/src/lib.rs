@@ -17,6 +17,7 @@ pub use block::{
 pub use factory::{GwynethEvmFactory, GwynethEvmFactoryImpl};
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloy_evm::{Evm, EvmEnv, MultiDatabase};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
@@ -35,7 +36,6 @@ use revm::{
     inspector::{Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
     primitives::hardfork::SpecId,
-    SystemCallEvm,
 };
 
 type InnerContext<DB> = GwynethContext<Context<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>>;
@@ -77,7 +77,30 @@ where
         inspect: bool,
     ) -> Self {
         let EvmEnv { block_env, cfg_env } = env;
-        let ctx = Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec);
+        let mut ctx =
+            Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec);
+
+        // Mirror `revm::builder_auto_setup`: auto-install xchain helpers required for
+        // extension oracle gas accounting and gwynethForwarder support detection.
+        if ctx.local.gwyneth_support_detector.is_none() {
+            if let Some(sender) = cfg_env.extension_oracle {
+                let detector =
+                    Arc::new(revm::gwyneth_support_detector::GwynethSupportDetector::new(
+                        cfg_env.spec,
+                        sender,
+                    ));
+                ctx.local.gwyneth_support_detector = Some(detector);
+            }
+        }
+
+        if ctx.local.extension_oracle_gas_calculator.is_none() {
+            let calculator = Arc::new(revm::SimpleExtensionOracleCalculator::new_with_exactness(
+                cfg_env.spec,
+                cfg_env.gwyneth_exactness,
+            ));
+            ctx.local.extension_oracle_gas_calculator = Some(calculator);
+        }
+
         let ctx = ctx.with_blocks(block_env).with_cfg(cfg_env);
         let gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
         let inner = InnerEvm {
@@ -215,7 +238,21 @@ where
         contract: revm::primitives::ChainAddress,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        self.inner.system_call_with_caller(caller, contract, data)
+        use revm::handler::system_call::SystemCallTx;
+
+        self.inner
+            .ctx
+            .set_tx(TxEnv::new_system_tx_with_caller(caller, contract, data));
+
+        let mut handler = GwynethHandler::<_, Self::Error, EthFrame<EthInterpreter>>::new();
+        let exec_result = if self.inspect {
+            handler.inspect_run_system_call(&mut self.inner)?
+        } else {
+            handler.run_system_call(&mut self.inner)?
+        };
+
+        let state = self.inner.journal_mut().finalize();
+        Ok(ResultAndState::new(exec_result, state))
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
