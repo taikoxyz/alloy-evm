@@ -1441,6 +1441,8 @@ dependencies = [
 name = "gwyneth-engine"
 version = "0.1.0"
 dependencies = [
+ "alloy-sol-macro",
+ "alloy-sol-types",
  "gwyneth-detector",
  "gwyneth-types",
  "revm",
