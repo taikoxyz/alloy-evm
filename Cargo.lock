@@ -1459,7 +1459,6 @@ dependencies = [
 name = "gwyneth-types"
 version = "0.1.0"
 dependencies = [
- "revm-context-interface",
  "revm-database-interface",
  "revm-primitives",
  "revm-state",
