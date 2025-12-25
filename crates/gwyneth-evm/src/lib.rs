@@ -237,11 +237,8 @@ where
 
         // Clear cross-transaction Gwyneth state and align the full execution context
         // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
-        self.inner.ctx.take_pending_chain_switch();
         self.inner.ctx.take_cross_chain_intent();
         self.inner.ctx.take_cross_chain_route();
-        self.inner.ctx.take_last_intercepted_switch();
-        self.inner.ctx.set_chain_switch_return_to(None);
 
         let cfg = &self.inner.ctx.base.cfg;
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
@@ -367,11 +364,8 @@ where
 
         // Clear cross-transaction Gwyneth state and align the full execution context
         // (db/cfg/journal/local) to the system call target chain before any inspector hooks run.
-        self.inner.ctx.take_pending_chain_switch();
         self.inner.ctx.take_cross_chain_intent();
         self.inner.ctx.take_cross_chain_route();
-        self.inner.ctx.take_last_intercepted_switch();
-        self.inner.ctx.set_chain_switch_return_to(None);
 
         let origin_chain_id = contract.0;
         let cfg = &self.inner.ctx.base.cfg;
