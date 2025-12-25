@@ -25,10 +25,11 @@ use alloc::sync::Arc;
 use alloy_evm::{Evm, EvmEnv, MultiDatabase};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
+use gwyneth_types::ChainState;
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethContext, GwynethHandler, GwynethHardFailure, GwynethPrecompileProvider, L2OverlayDb,
-    HardFailureInspector, TrackingJournal,
+    GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure, GwynethPrecompileProvider,
+    HardFailureInspector, L2OverlayDb, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -460,7 +461,10 @@ where
 
     /// Switch the active overlay chain.
     pub fn switch_chain(&mut self, chain_id: u64) -> Result<(), String> {
-        self.ctx_mut().base.journaled_state.db_mut().switch_to_chain(chain_id)
+        let mode = self.ctx().execution_mode();
+        self.ctx_mut()
+            .apply_chain_state(ChainState::new(chain_id, chain_id, mode))
+            .map_err(|_| "Chain switch failed".to_string())
     }
 
     /// Return the current active chain id.
