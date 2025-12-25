@@ -107,7 +107,7 @@ fn base_env() -> (HashMap<u64, BlockEnv>, CfgEnv) {
 }
 
 #[test]
-fn hard_failure_normalization_transact_raw() {
+fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     let caller = Address::from([0x10; 20]);
     let entry = Address::from([0x13; 20]);
     let bad_to = Address::from([0x99; 20]);
@@ -174,7 +174,7 @@ fn hard_failure_normalization_transact_raw() {
 }
 
 #[test]
-fn hard_failure_normalization_transact_system_call() {
+fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     let caller = Address::from([0x10; 20]);
     let entry = Address::from([0x13; 20]);
     let bad_to = Address::from([0x99; 20]);
