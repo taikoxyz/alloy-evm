@@ -805,7 +805,7 @@ mod tests {
         context::Block,
         database::{EmptyDB, MultiEmptyDB},
         precompile::{PrecompileId, PrecompileOutput},
-        Context, MainBuilder,
+        Context, MainBuilder, MainContext,
     };
 
     #[test]
