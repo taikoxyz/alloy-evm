@@ -231,6 +231,43 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // In multi-chain execution, the authoritative "tx origin chain" is the caller's chain,
+        // not the EIP-155 `chain_id` field which may be unset or populated with a legacy default.
+        let origin_chain_id = tx.caller.chain_id();
+
+        // Clear cross-transaction Gwyneth state and align the full execution context
+        // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
+        self.inner.ctx.take_pending_chain_switch();
+        self.inner.ctx.take_cross_chain_intent();
+        self.inner.ctx.take_cross_chain_route();
+        self.inner.ctx.take_last_intercepted_switch();
+        self.inner.ctx.set_chain_switch_return_to(None);
+
+        let cfg = &self.inner.ctx.base.cfg;
+        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
+            cfg.xchain,
+            cfg.parent_chain_id,
+            cfg.gwyneth.is_some(),
+            cfg.extension_oracle.is_some(),
+        );
+        let is_direct = cfg.parent_chain_id == Some(origin_chain_id);
+        let start_mode = gwyneth_types::ExecutionMode::from_context(
+            origin_chain_id,
+            cfg.parent_chain_id,
+            is_direct,
+            mode_tracking_enabled,
+        );
+
+        if self
+            .inner
+            .ctx
+            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode))
+            .is_err()
+        {
+            return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
+        }
+        self.inner.frame_stack.clear();
+
         // Reset inspector state for the new transaction so hard-failure details can't leak.
         self.inner.inspector.reset_for_new_tx();
 
@@ -327,6 +364,36 @@ where
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         use revm::handler::system_call::SystemCallTx;
+
+        // Clear cross-transaction Gwyneth state and align the full execution context
+        // (db/cfg/journal/local) to the system call target chain before any inspector hooks run.
+        self.inner.ctx.take_pending_chain_switch();
+        self.inner.ctx.take_cross_chain_intent();
+        self.inner.ctx.take_cross_chain_route();
+        self.inner.ctx.take_last_intercepted_switch();
+        self.inner.ctx.set_chain_switch_return_to(None);
+
+        let origin_chain_id = contract.0;
+        let cfg = &self.inner.ctx.base.cfg;
+        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
+            cfg.xchain,
+            cfg.parent_chain_id,
+            cfg.gwyneth.is_some(),
+            cfg.extension_oracle.is_some(),
+        );
+        let is_direct = cfg.parent_chain_id == Some(origin_chain_id);
+        let start_mode = gwyneth_types::ExecutionMode::from_context(
+            origin_chain_id,
+            cfg.parent_chain_id,
+            is_direct,
+            mode_tracking_enabled,
+        );
+
+        let _ = self
+            .inner
+            .ctx
+            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode));
+        self.inner.frame_stack.clear();
 
         // Reset inspector state for the new system tx so hard-failure details can't leak.
         self.inner.inspector.reset_for_new_tx();
