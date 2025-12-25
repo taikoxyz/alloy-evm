@@ -9,12 +9,16 @@ use gwyneth_types as _;
 
 pub mod block;
 pub mod factory;
+pub mod halt_reason;
+pub mod inspector;
 
 pub use block::{
     GwynethBlockExecutionCtx, GwynethBlockExecutor, GwynethBlockExecutorFactory,
     GwynethBlockExecutorFactoryTrait,
 };
 pub use factory::{GwynethEvmFactory, GwynethEvmFactoryImpl};
+pub use halt_reason::GwynethHaltReason;
+pub use inspector::GwynethInspector;
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -23,13 +27,15 @@ use alloy_primitives::Bytes;
 use core::fmt::Debug;
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethContext, GwynethHandler, GwynethPrecompileProvider, L2OverlayDb, TrackingJournal,
+    GwynethContext, GwynethHandler, GwynethHardFailure, GwynethPrecompileProvider, L2OverlayDb,
+    HardFailureInspector, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
     context_interface::{
         journaled_state::JournalTr,
-        result::{EVMError, HaltReason, InvalidTransaction, ResultAndState},
+        local::LocalContextTr,
+        result::{EVMError, InvalidTransaction, ResultAndState},
         ContextSetters, ContextTr,
     },
     handler::{instructions::EthInstructions, EthFrame, Handler},
@@ -42,7 +48,7 @@ type InnerContext<DB> = GwynethContext<Context<BlockEnv, TxEnv, CfgEnv, DB, Trac
 
 type InnerEvm<DB, I> = revm::context::evm::Evm<
     InnerContext<DB>,
-    I,
+    GwynethInspector<I>,
     EthInstructions<EthInterpreter, InnerContext<DB>>,
     GwynethPrecompileProvider,
     EthFrame<EthInterpreter>,
@@ -53,7 +59,6 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 #[allow(missing_debug_implementations)]
 pub struct GwynethEvm<DB: MultiDatabase, I> {
     inner: InnerEvm<DB, I>,
-    inspect: bool,
 }
 
 impl<DB: MultiDatabase + gwyneth_types::ChainSwitchable, I> GwynethEvm<DB, I>
@@ -103,6 +108,7 @@ where
 
         let ctx = ctx.with_blocks(block_env).with_cfg(cfg_env);
         let gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
+        let inspector = GwynethInspector::new(inspector, inspect);
         let inner = InnerEvm {
             ctx: gwyneth_ctx,
             inspector,
@@ -110,7 +116,7 @@ where
             precompiles: GwynethPrecompileProvider::default(),
             frame_stack: Default::default(),
         };
-        Self { inner, inspect }
+        Self { inner }
     }
 
     fn ctx(&self) -> &InnerContext<DB> {
@@ -197,17 +203,20 @@ where
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
 where
-    DB: MultiDatabase + gwyneth_types::ChainSwitchable + revm::Database,
+    DB: MultiDatabase
+        + gwyneth_types::ChainSwitchable
+        + gwyneth_types::ParentLoadCheckpoints
+        + revm::Database,
     I: Inspector<InnerContext<DB>>,
 {
     type DB = DB;
     type Tx = TxEnv;
     type Error =
         EVMError<<DB as revm::database_interface::MultiChainDatabase>::Error, InvalidTransaction>;
-    type HaltReason = HaltReason;
+    type HaltReason = GwynethHaltReason;
     type Spec = SpecId;
     type Precompiles = GwynethPrecompileProvider;
-    type Inspector = I;
+    type Inspector = GwynethInspector<I>;
 
     fn blocks(&self) -> &revm::primitives::HashMap<u64, BlockEnv> {
         &self.ctx().base.block
@@ -221,13 +230,91 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Reset inspector state for the new transaction so hard-failure details can't leak.
+        self.inner.inspector.reset_for_new_tx();
+
         self.inner.ctx.set_tx(tx);
+
         let mut handler = GwynethHandler::<_, Self::Error, EthFrame<EthInterpreter>>::new();
-        let exec_result = if self.inspect {
-            handler.inspect_run(&mut self.inner)?
-        } else {
-            handler.run(&mut self.inner)?
-        };
+
+        // Mirror `InspectorHandler::inspect_run_without_catch_error`, but normalize hard failures
+        // before post-execution output runs (the internal `FatalExternalError` would otherwise
+        // panic when surfaced through `post_execution::output`).
+        let init_and_floor_gas = handler.validate(&mut self.inner)?;
+        let mut eip7702_refund = handler.pre_execution(&mut self.inner)? as i64;
+        let mut frame_result = handler.inspect_execution(&mut self.inner, &init_and_floor_gas)?;
+
+        let mut hard_failure: Option<GwynethHardFailure> = None;
+        if let Some(details) = self.inner.inspector.take_hard_failure_details() {
+            let gas_used = self.inner.ctx.tx().gas_limit;
+            hard_failure = Some(GwynethHardFailure {
+                chain_id: details.chain_id,
+                opcode: details.opcode,
+                reason: details.reason,
+                gas_used,
+                logs: alloc::vec::Vec::new(),
+                output: Bytes::new(),
+            });
+
+            // Rewrite the internal `FatalExternalError` into a standard Halt.
+            use revm::interpreter::InstructionResult;
+            match &mut frame_result {
+                revm::handler::FrameResult::Call(outcome) => {
+                    outcome.result.result = InstructionResult::OutOfGas;
+                    outcome.result.output = revm::primitives::Bytes::new();
+                }
+                revm::handler::FrameResult::Create(outcome) => {
+                    outcome.result.result = InstructionResult::OutOfGas;
+                    outcome.result.output = revm::primitives::Bytes::new();
+                }
+            }
+
+            // Clear the forced context error so output can be produced normally.
+            *self.inner.ctx.error() = Ok(());
+
+            // Receipt contract: no refunds for hard failures.
+            eip7702_refund = 0;
+
+            // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
+            let mut used = revm::primitives::HashMap::default();
+            used.insert(details.chain_id, gas_used);
+            self.inner
+                .ctx
+                .local_mut()
+                .set_per_chain_gas(used, revm::primitives::HashMap::default());
+
+            // Avoid leaking any EO adjustments into the normalized surface.
+            self.inner.ctx.local_mut().set_oracle_gas_adjustment(None);
+            let _ = self.inner.ctx.local_mut().take_oracle_gas_adjustment_per_chain();
+        }
+
+        handler.post_execution(
+            &mut self.inner,
+            &mut frame_result,
+            init_and_floor_gas,
+            eip7702_refund,
+        )?;
+
+        let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
+        let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
+
+        if let Some(hf) = hard_failure {
+            exec_result = match exec_result {
+                revm::context_interface::result::ExecutionResult::Halt {
+                    gas_used,
+                    gas_used_per_chain,
+                    gwyneth,
+                    ..
+                } => revm::context_interface::result::ExecutionResult::Halt {
+                    reason: GwynethHaltReason::GwynethHardFailure(hf),
+                    gas_used,
+                    gas_used_per_chain,
+                    gwyneth,
+                },
+                other => other,
+            };
+        }
+
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
     }
@@ -240,16 +327,76 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         use revm::handler::system_call::SystemCallTx;
 
+        // Reset inspector state for the new system tx so hard-failure details can't leak.
+        self.inner.inspector.reset_for_new_tx();
+
         self.inner
             .ctx
             .set_tx(TxEnv::new_system_tx_with_caller(caller, contract, data));
 
         let mut handler = GwynethHandler::<_, Self::Error, EthFrame<EthInterpreter>>::new();
-        let exec_result = if self.inspect {
-            handler.inspect_run_system_call(&mut self.inner)?
-        } else {
-            handler.run_system_call(&mut self.inner)?
-        };
+
+        // Mirror `InspectorHandler::inspect_run_system_call`, but normalize hard failures before
+        // output is computed.
+        let init_and_floor_gas = revm::interpreter::InitialAndFloorGas::new(0, 0);
+        let mut frame_result = handler.inspect_execution(&mut self.inner, &init_and_floor_gas)?;
+
+        let mut hard_failure: Option<GwynethHardFailure> = None;
+        if let Some(details) = self.inner.inspector.take_hard_failure_details() {
+            let gas_used = self.inner.ctx.tx().gas_limit;
+            hard_failure = Some(GwynethHardFailure {
+                chain_id: details.chain_id,
+                opcode: details.opcode,
+                reason: details.reason,
+                gas_used,
+                logs: alloc::vec::Vec::new(),
+                output: Bytes::new(),
+            });
+
+            use revm::interpreter::InstructionResult;
+            match &mut frame_result {
+                revm::handler::FrameResult::Call(outcome) => {
+                    outcome.result.result = InstructionResult::OutOfGas;
+                    outcome.result.output = revm::primitives::Bytes::new();
+                }
+                revm::handler::FrameResult::Create(outcome) => {
+                    outcome.result.result = InstructionResult::OutOfGas;
+                    outcome.result.output = revm::primitives::Bytes::new();
+                }
+            }
+
+            *self.inner.ctx.error() = Ok(());
+
+            let mut used = revm::primitives::HashMap::default();
+            used.insert(details.chain_id, gas_used);
+            self.inner
+                .ctx
+                .local_mut()
+                .set_per_chain_gas(used, revm::primitives::HashMap::default());
+
+            self.inner.ctx.local_mut().set_oracle_gas_adjustment(None);
+            let _ = self.inner.ctx.local_mut().take_oracle_gas_adjustment_per_chain();
+        }
+
+        let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
+        let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
+
+        if let Some(hf) = hard_failure {
+            exec_result = match exec_result {
+                revm::context_interface::result::ExecutionResult::Halt {
+                    gas_used,
+                    gas_used_per_chain,
+                    gwyneth,
+                    ..
+                } => revm::context_interface::result::ExecutionResult::Halt {
+                    reason: GwynethHaltReason::GwynethHardFailure(hf),
+                    gas_used,
+                    gas_used_per_chain,
+                    gwyneth,
+                },
+                other => other,
+            };
+        }
 
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
@@ -264,7 +411,7 @@ where
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
-        self.inspect = enabled;
+        self.inner.inspector.set_user_enabled(enabled);
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {

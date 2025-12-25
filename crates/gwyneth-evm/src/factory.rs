@@ -13,7 +13,7 @@ use crate::{GwynethEvm, GwynethEvmContext};
 use alloy_evm::{EvmEnv, MultiDatabase};
 use core::{error::Error, fmt::Debug, hash::Hash};
 use gwyneth_detector::DetectorConfig;
-use gwyneth_types::ChainSwitchable;
+use gwyneth_types::{ChainSwitchable, ParentLoadCheckpoints};
 use revm::{
     context_interface::result::HaltReasonTr,
     inspector::{Inspector, NoOpInspector},
@@ -38,7 +38,7 @@ use revm::{
 pub trait GwynethEvmFactory {
     /// The EVM type that this factory creates.
     type Evm<
-        DB: MultiDatabase + ChainSwitchable + revm::Database,
+        DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database,
         I: Inspector<GwynethEvmContext<DB>>,
     >: alloy_evm::Evm<
         DB = DB,
@@ -47,11 +47,11 @@ pub trait GwynethEvmFactory {
         Error = Self::Error<<DB as revm::database_interface::MultiChainDatabase>::Error>,
         Spec = Self::Spec,
         Precompiles = Self::Precompiles,
-        Inspector = I,
+        Inspector = crate::GwynethInspector<I>,
     >;
 
     /// The EVM context for inspectors.
-    type Context<DB: MultiDatabase + ChainSwitchable + revm::Database>:
+    type Context<DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database>:
         revm::context_interface::ContextTr<
         Db = DB,
         Journal: revm::inspector::JournalExt,
@@ -73,7 +73,7 @@ pub trait GwynethEvmFactory {
     type Precompiles;
 
     /// Creates a new Gwyneth EVM instance.
-    fn create_gwyneth_evm<DB: MultiDatabase + ChainSwitchable + revm::Database>(
+    fn create_gwyneth_evm<DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database>(
         &self,
         db: DB,
         evm_env: EvmEnv<Self::Spec>,
@@ -81,7 +81,7 @@ pub trait GwynethEvmFactory {
 
     /// Creates a new Gwyneth EVM instance with an inspector.
     fn create_gwyneth_evm_with_inspector<
-        DB: MultiDatabase + ChainSwitchable + revm::Database,
+        DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database,
         I: Inspector<GwynethEvmContext<DB>>,
     >(
         &self,
@@ -119,19 +119,17 @@ impl GwynethEvmFactoryImpl {
 }
 
 impl GwynethEvmFactory for GwynethEvmFactoryImpl {
-    type Evm<DB: MultiDatabase + ChainSwitchable + revm::Database, I: Inspector<GwynethEvmContext<DB>>> =
+    type Evm<DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database, I: Inspector<GwynethEvmContext<DB>>> =
         GwynethEvm<DB, I>;
-    type Context<DB: MultiDatabase + ChainSwitchable + revm::Database> = GwynethEvmContext<DB>;
+    type Context<DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database> = GwynethEvmContext<DB>;
     type Tx = revm::context::TxEnv;
-    type Error<DBError: Error + Send + Sync + 'static> = revm::context_interface::result::EVMError<
-        DBError,
-        revm::context_interface::result::InvalidTransaction,
-    >;
-    type HaltReason = revm::context_interface::result::HaltReason;
+    type Error<DBError: Error + Send + Sync + 'static> =
+        revm::context_interface::result::EVMError<DBError, revm::context_interface::result::InvalidTransaction>;
+    type HaltReason = crate::GwynethHaltReason;
     type Spec = SpecId;
     type Precompiles = gwyneth_engine::GwynethPrecompileProvider;
 
-    fn create_gwyneth_evm<DB: MultiDatabase + ChainSwitchable + revm::Database>(
+    fn create_gwyneth_evm<DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database>(
         &self,
         db: DB,
         evm_env: EvmEnv<Self::Spec>,
@@ -140,7 +138,7 @@ impl GwynethEvmFactory for GwynethEvmFactoryImpl {
     }
 
     fn create_gwyneth_evm_with_inspector<
-        DB: MultiDatabase + ChainSwitchable + revm::Database,
+        DB: MultiDatabase + ChainSwitchable + ParentLoadCheckpoints + revm::Database,
         I: Inspector<GwynethEvmContext<DB>>,
     >(
         &self,

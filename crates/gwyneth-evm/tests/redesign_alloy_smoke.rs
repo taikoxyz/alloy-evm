@@ -1,6 +1,6 @@
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl};
-use gwyneth_engine::{JournalInspector, L2OverlayDb};
+use gwyneth_engine::L2OverlayDb;
 use gwyneth_types::EXTENSION_ORACLE;
 use revm::{
     context::{
@@ -46,12 +46,7 @@ fn redesign_alloy_smoke() {
     blocks.insert(0, block_env);
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm_with_inspector(
-        db,
-        alloy_evm::EvmEnv { block_env: blocks, cfg_env },
-        JournalInspector::new(),
-    );
-    evm.enable_inspector();
+    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env: blocks, cfg_env });
 
     let mut tx = TxEnv::default();
     tx.caller = ChainAddress::new(1, caller);
