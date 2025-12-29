@@ -17,7 +17,7 @@ use alloy_primitives::{Address, Bytes, TxKind as PrimitiveTxKind};
 use revm::{
     context::TxEnv,
     context_interface::either::Either,
-    primitives::{ChainAddress, MultiChainTxKind as TxKind},
+    primitives::TxKind,
 };
 
 /// Trait marking types that can be converted into a transaction environment.
@@ -141,16 +141,13 @@ impl<T, TxEnv: FromRecoveredTx<T>> ToTxEnv<TxEnv> for Recovered<T> {
 impl FromRecoveredTx<TxLegacy> for TxEnv {
     fn from_recovered_tx(tx: &TxLegacy, caller: Address) -> Self {
         let TxLegacy { chain_id, nonce, gas_price, gas_limit, to, value, input } = tx;
-        let resolved_chain_id = chain_id.unwrap_or(1);
         Self {
             tx_type: tx.ty(),
-            caller: ChainAddress::new(resolved_chain_id, caller),
+            caller,
             gas_limit: *gas_limit,
             gas_price: *gas_price,
             kind: match *to {
-                PrimitiveTxKind::Call(addr) => {
-                    TxKind::Call(ChainAddress::new(resolved_chain_id, addr))
-                }
+                PrimitiveTxKind::Call(addr) => TxKind::Call(addr),
                 PrimitiveTxKind::Create => TxKind::Create,
             },
             value: *value,
@@ -173,11 +170,11 @@ impl FromRecoveredTx<TxEip2930> for TxEnv {
         let TxEip2930 { chain_id, nonce, gas_price, gas_limit, to, value, access_list, input } = tx;
         Self {
             tx_type: tx.ty(),
-            caller: ChainAddress::new(*chain_id, caller),
+            caller,
             gas_limit: *gas_limit,
             gas_price: *gas_price,
             kind: match *to {
-                PrimitiveTxKind::Call(addr) => TxKind::Call(ChainAddress::new(*chain_id, addr)),
+                PrimitiveTxKind::Call(addr) => TxKind::Call(addr),
                 PrimitiveTxKind::Create => TxKind::Create,
             },
             value: *value,
@@ -211,11 +208,11 @@ impl FromRecoveredTx<TxEip1559> for TxEnv {
         } = tx;
         Self {
             tx_type: tx.ty(),
-            caller: ChainAddress::new(*chain_id, caller),
+            caller,
             gas_limit: *gas_limit,
             gas_price: *max_fee_per_gas,
             kind: match *to {
-                PrimitiveTxKind::Call(addr) => TxKind::Call(ChainAddress::new(*chain_id, addr)),
+                PrimitiveTxKind::Call(addr) => TxKind::Call(addr),
                 PrimitiveTxKind::Create => TxKind::Create,
             },
             value: *value,
@@ -252,10 +249,10 @@ impl FromRecoveredTx<TxEip4844> for TxEnv {
         } = tx;
         Self {
             tx_type: tx.ty(),
-            caller: ChainAddress::new(*chain_id, caller),
+            caller,
             gas_limit: *gas_limit,
             gas_price: *max_fee_per_gas,
-            kind: TxKind::Call(ChainAddress::new(*chain_id, *to)),
+            kind: TxKind::Call(*to),
             value: *value,
             data: input.clone(),
             nonce: *nonce,
@@ -291,10 +288,10 @@ impl FromRecoveredTx<TxEip7702> for TxEnv {
         } = tx;
         Self {
             tx_type: tx.ty(),
-            caller: ChainAddress::new(*chain_id, caller),
+            caller,
             gas_limit: *gas_limit,
             gas_price: *max_fee_per_gas,
-            kind: TxKind::Call(ChainAddress::new(*chain_id, *to)),
+            kind: TxKind::Call(*to),
             value: *value,
             data: input.clone(),
             nonce: *nonce,
@@ -524,11 +521,11 @@ mod op {
             } = tx;
             Self {
                 tx_type: tx.ty(),
-                caller: ChainAddress::new(1, caller),
+                caller,
                 gas_limit: *gas_limit,
                 kind: match *to {
                     alloy_primitives::TxKind::Call(addr) => {
-                        TxKind::Call(ChainAddress::new(1, addr))
+                        TxKind::Call(addr)
                     }
                     alloy_primitives::TxKind::Create => TxKind::Create,
                 },

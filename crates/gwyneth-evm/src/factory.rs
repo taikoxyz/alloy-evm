@@ -44,7 +44,7 @@ pub trait GwynethEvmFactory {
         DB = DB,
         Tx = Self::Tx,
         HaltReason = Self::HaltReason,
-        Error = Self::Error<<DB as revm::database_interface::MultiChainDatabase>::Error>,
+        Error = Self::Error<<DB as revm::Database>::Error>,
         Spec = Self::Spec,
         Precompiles = Self::Precompiles,
         Inspector = crate::GwynethInspector<I>,

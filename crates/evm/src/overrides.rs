@@ -13,7 +13,7 @@ use revm::{
     bytecode::BytecodeDecodeError,
     context::BlockEnv,
     database::{CacheDB, State},
-    database_interface::{MultiChainDatabase, MultiChainDatabaseCommit},
+    database_interface::{Database, DatabaseCommit},
     state::{Account, AccountStatus, Bytecode, EvmStorageSlot},
 };
 
@@ -57,10 +57,7 @@ impl<DB> OverrideBlockHashes for CacheDB<DB> {
 
 impl<DB> OverrideBlockHashes for State<DB> {
     fn override_block_hashes(&mut self, block_hashes: BTreeMap<u64, B256>) {
-        // For multichain support, we need to insert block hashes for the default chain (0)
-        // self.block_hashes is BTreeMap<u64 (chain_id), BTreeMap<u64 (block_number), B256>>
-        let chain_id = 0u64; // Default chain ID for overrides
-        self.block_hashes.entry(chain_id).or_insert_with(BTreeMap::new).extend(block_hashes);
+        self.block_hashes.extend(block_hashes);
     }
 }
 
@@ -98,9 +95,7 @@ where
         env.gas_limit = gas_limit;
     }
     if let Some(coinbase) = coinbase {
-        // For multichain support, beneficiary is now a ChainAddress
-        // Use chain_id 0 as default for overrides
-        env.beneficiary = revm::primitives::ChainAddress::new(0, coinbase);
+        env.beneficiary = coinbase;
     }
     if let Some(random) = random {
         env.prevrandao = Some(random);
@@ -116,7 +111,7 @@ pub fn apply_state_overrides<DB>(
     db: &mut DB,
 ) -> Result<(), StateOverrideError<DB::Error>>
 where
-    DB: MultiChainDatabase + MultiChainDatabaseCommit,
+    DB: Database + DatabaseCommit,
 {
     for (account, account_overrides) in overrides {
         apply_account_override(account, account_overrides, db)?;
@@ -131,11 +126,9 @@ fn apply_account_override<DB>(
     db: &mut DB,
 ) -> Result<(), StateOverrideError<DB::Error>>
 where
-    DB: MultiChainDatabase + MultiChainDatabaseCommit,
+    DB: Database + DatabaseCommit,
 {
-    let chain_addr = revm::primitives::ChainAddress::new(0, account);
-    let mut info =
-        db.basic_multi(chain_addr).map_err(StateOverrideError::Database)?.unwrap_or_default();
+    let mut info = db.basic(account).map_err(StateOverrideError::Database)?.unwrap_or_default();
 
     if let Some(nonce) = account_override.nonce {
         info.nonce = nonce;
@@ -155,7 +148,6 @@ where
         status: AccountStatus::Touched,
         storage: Default::default(),
         transaction_id: 0,
-        warm_tracker: revm::state::WarmTracker::default(),
     };
 
     let storage_diff = match (account_override.state, account_override.state_diff) {
@@ -166,9 +158,8 @@ where
         // used.
         (Some(state), None) => {
             // Destroy the account to ensure that its storage is cleared
-            let chain_addr = revm::primitives::ChainAddress::new(0, account);
-            db.commit_multi(HashMap::from_iter([(
-                chain_addr,
+            db.commit(HashMap::from_iter([(
+                account,
                 Account {
                     status: AccountStatus::SelfDestructed | AccountStatus::Touched,
                     ..Default::default()
@@ -189,15 +180,14 @@ where
                     // we use inverted value here to ensure that storage is treated as changed
                     original_value: (!value).into(),
                     present_value: value.into(),
-                    warm_tracker: revm::state::WarmTracker::default(),
                     transaction_id: 0,
+                    is_cold: false,
                 },
             );
         }
     }
 
-    let chain_addr = revm::primitives::ChainAddress::new(0, account);
-    db.commit_multi(HashMap::from_iter([(chain_addr, acc)]));
+    db.commit(HashMap::from_iter([(account, acc)]));
 
     Ok(())
 }
@@ -206,7 +196,7 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{address, bytes};
-    use revm::database::{EmptyDB, MultiEmptyDB};
+    use revm::database::EmptyDB;
 
     #[test]
     fn test_state_override_state() {
@@ -215,15 +205,12 @@ mod tests {
         );
         let to = address!("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599");
 
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(0, EmptyDB::default());
-        let mut db = State::builder().with_database(multi_db).build();
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
 
         let acc_override = AccountOverride::default().with_code(code.clone());
         apply_account_override(to, acc_override, &mut db).unwrap();
 
-        let chain_addr = revm::primitives::ChainAddress::new(0, to);
-        let account = db.basic_multi(chain_addr).unwrap().unwrap();
+        let account = db.basic(to).unwrap().unwrap();
         assert!(account.code.is_some());
         assert_eq!(account.code_hash, keccak256(&code));
     }
@@ -235,15 +222,12 @@ mod tests {
         );
         let to = address!("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599");
 
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(0, EmptyDB::default());
-        let mut db = State::builder().with_database(multi_db).build();
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
 
         let acc_override = AccountOverride::default().with_code(code.clone());
         apply_account_override(to, acc_override, &mut db).unwrap();
 
-        let chain_addr = revm::primitives::ChainAddress::new(0, to);
-        let account = db.basic_multi(chain_addr).unwrap().unwrap();
+        let account = db.basic(to).unwrap().unwrap();
         assert!(account.code.is_some());
         assert_eq!(account.code_hash, keccak256(&code));
     }
@@ -256,9 +240,7 @@ mod tests {
         let value1 = B256::from(U256::from(100));
         let value2 = B256::from(U256::from(200));
 
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(0, EmptyDB::default());
-        let mut db = State::builder().with_database(multi_db).build();
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
 
         // Create storage overrides
         let mut storage = HashMap::<B256, B256>::default();
@@ -270,13 +252,11 @@ mod tests {
 
         // Verify that the account was created in the cache
         // The account should be in the state cache after applying the override
-        let chain_addr = revm::primitives::ChainAddress::new(0, account);
-
         // Check that the account exists in the cache
-        assert!(db.cache.accounts.contains_key(&chain_addr), "Account should be in cache");
+        assert!(db.cache.accounts.contains_key(&account), "Account should be in cache");
 
         // Verify that storage was set (checking the cache directly)
-        let cached_acc = db.cache.accounts.get(&chain_addr).unwrap();
+        let cached_acc = db.cache.accounts.get(&account).unwrap();
         if let Some(acc) = &cached_acc.account {
             assert!(acc.storage.contains_key(&U256::from(1)), "Storage slot 1 should be set");
             assert!(acc.storage.contains_key(&U256::from(2)), "Storage slot 2 should be set");
@@ -291,9 +271,7 @@ mod tests {
         let value1 = B256::from(U256::from(100));
         let value2 = B256::from(U256::from(200));
 
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(0, EmptyDB::default());
-        let mut db = State::builder().with_database(multi_db).build();
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
 
         // Create storage overrides using state (not state_diff)
         let mut storage = HashMap::<B256, B256>::default();
@@ -306,9 +284,8 @@ mod tests {
         apply_state_overrides(state_overrides, &mut db).unwrap();
 
         // Get the storage value using the database interface
-        let chain_addr = revm::primitives::ChainAddress::new(0, account);
-        let storage1 = db.storage_multi(chain_addr, U256::from(1)).unwrap();
-        let storage2 = db.storage_multi(chain_addr, U256::from(2)).unwrap();
+        let storage1 = db.storage(account, U256::from(1)).unwrap();
+        let storage2 = db.storage(account, U256::from(2)).unwrap();
 
         assert_eq!(storage1, U256::from(100));
         assert_eq!(storage2, U256::from(200));

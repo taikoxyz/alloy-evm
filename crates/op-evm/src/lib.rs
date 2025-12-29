@@ -22,7 +22,7 @@ use revm::{
     context::{BlockEnv, TxEnv},
     context_interface::result::{EVMError, HaltReason, ResultAndState},
     inspector::NoOpInspector,
-    primitives::{hardfork::SpecId, ChainAddress, HashMap},
+    primitives::{hardfork::SpecId, Address, HashMap},
     Inspector,
 };
 
@@ -88,8 +88,8 @@ impl<DB: MultiDatabase, I> Evm for OpEvm<DB, I> {
 
     fn transact_system_call(
         &mut self,
-        _caller: ChainAddress,
-        _contract: ChainAddress,
+        _caller: Address,
+        _contract: Address,
         _data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         unimplemented!("OpEvm stub - not for production use")

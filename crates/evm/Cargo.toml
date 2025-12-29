@@ -25,6 +25,9 @@ revm.workspace = true
 # op-revm = { workspace = true, optional = true }  # Disabled due to incompatibility with HashMap<u64, BlockEnv>
 op-alloy-consensus = { workspace = true, optional = true }
 
+# gwyneth types (schema + multichain helpers)
+gwyneth-types = { path = "../../../revm-private/revm-private/gwyneth/crates/gwyneth-types", default-features = false }
+
 auto_impl.workspace = true
 derive_more.workspace = true
 thiserror.workspace = true
@@ -46,6 +49,7 @@ std = [
     "alloy-eips/std",
     "alloy-sol-types/std",
     "derive_more/std",
+    "gwyneth-types/std",
     # "op-revm?/std",  # Disabled due to incompatibility
     "thiserror/std",
     "op-alloy-consensus?/std",

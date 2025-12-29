@@ -3,7 +3,6 @@
 use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, B256, U256};
 use core::{error::Error, fmt, fmt::Debug};
-use revm::primitives::ChainAddress;
 use revm::{
     context::{Block, DBErrorMarker, JournalTr},
     interpreter::{SStoreResult, StateLoad},
@@ -44,9 +43,7 @@ impl EvmInternalsError {
 ///
 /// This trait provides an abstraction over journal operations without exposing
 /// associated types, making it object-safe and suitable for dynamic dispatch.
-trait EvmInternalsTr:
-    revm::database_interface::MultiChainDatabase<Error = ErasedError> + Debug
-{
+trait EvmInternalsTr: revm::database_interface::Database<Error = ErasedError> + Debug {
     fn load_account(
         &mut self,
         address: Address,
@@ -81,62 +78,49 @@ trait EvmInternalsTr:
 #[derive(Debug)]
 struct EvmInternalsImpl<'a, T> {
     journal: &'a mut T,
-    chain_id: u64,
 }
 
-impl<T> revm::database_interface::MultiChainDatabase for EvmInternalsImpl<'_, T>
+impl<T> revm::database_interface::Database for EvmInternalsImpl<'_, T>
 where
-    T: JournalTr<Database: revm::database_interface::MultiChainDatabase>,
-    <T::Database as revm::database_interface::MultiChainDatabase>::Error: Send + Sync + 'static,
+    T: JournalTr<Database: revm::database_interface::Database>,
+    <T::Database as revm::database_interface::Database>::Error: Send + Sync + 'static,
 {
     type Error = ErasedError;
 
-    fn basic_multi(&mut self, address: ChainAddress) -> Result<Option<AccountInfo>, Self::Error> {
-        self.journal.db_mut().basic_multi(address).map_err(ErasedError::new)
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.journal.db_mut().basic(address).map_err(ErasedError::new)
     }
 
-    fn code_by_hash_multi(
-        &mut self,
-        chain_id: u64,
-        code_hash: B256,
-    ) -> Result<Bytecode, Self::Error> {
-        self.journal.db_mut().code_by_hash_multi(chain_id, code_hash).map_err(ErasedError::new)
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.journal.db_mut().code_by_hash(code_hash).map_err(ErasedError::new)
     }
 
-    fn storage_multi(
-        &mut self,
-        address: ChainAddress,
-        index: StorageKey,
-    ) -> Result<StorageValue, Self::Error> {
-        self.journal.db_mut().storage_multi(address, index).map_err(ErasedError::new)
+    fn storage(&mut self, address: Address, index: StorageKey) -> Result<StorageValue, Self::Error> {
+        self.journal.db_mut().storage(address, index).map_err(ErasedError::new)
     }
 
-    fn block_hash_multi(&mut self, chain_id: u64, number: u64) -> Result<B256, Self::Error> {
-        self.journal.db_mut().block_hash_multi(chain_id, number).map_err(ErasedError::new)
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.journal.db_mut().block_hash(number).map_err(ErasedError::new)
     }
 }
 
 impl<T> EvmInternalsTr for EvmInternalsImpl<'_, T>
 where
-    T: JournalTr<Database: revm::database_interface::MultiChainDatabase> + Debug,
-    <T::Database as revm::database_interface::MultiChainDatabase>::Error: Send + Sync + 'static,
+    T: JournalTr<Database: revm::database_interface::Database> + Debug,
+    <T::Database as revm::database_interface::Database>::Error: Send + Sync + 'static,
 {
     fn load_account(
         &mut self,
         address: Address,
     ) -> Result<StateLoad<&mut Account>, EvmInternalsError> {
-        // Convert Address to ChainAddress using the active chain_id
-        let chain_address = ChainAddress::new(self.chain_id, address);
-        self.journal.load_account(chain_address).map_err(EvmInternalsError::database)
+        self.journal.load_account(address).map_err(EvmInternalsError::database)
     }
 
     fn load_account_code(
         &mut self,
         address: Address,
     ) -> Result<StateLoad<&mut Account>, EvmInternalsError> {
-        // Convert Address to ChainAddress using the active chain_id
-        let chain_address = ChainAddress::new(self.chain_id, address);
-        self.journal.load_account_code(chain_address).map_err(EvmInternalsError::database)
+        self.journal.load_account_code(address).map_err(EvmInternalsError::database)
     }
 
     fn sload(
@@ -144,21 +128,15 @@ where
         address: Address,
         key: StorageKey,
     ) -> Result<StateLoad<StorageValue>, EvmInternalsError> {
-        // Convert Address to ChainAddress using the active chain_id
-        let chain_address = ChainAddress::new(self.chain_id, address);
-        self.journal.sload(chain_address, key).map_err(EvmInternalsError::database)
+        self.journal.sload(address, key).map_err(EvmInternalsError::database)
     }
 
     fn touch_account(&mut self, address: Address) {
-        // Convert Address to ChainAddress using the active chain_id
-        let chain_address = ChainAddress::new(self.chain_id, address);
-        self.journal.touch_account(chain_address);
+        self.journal.touch_account(address);
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) {
-        // Convert Address to ChainAddress using the active chain_id
-        let chain_address = ChainAddress::new(self.chain_id, address);
-        self.journal.set_code(chain_address, code);
+        self.journal.set_code(address, code);
     }
 
     fn sstore(
@@ -167,9 +145,7 @@ where
         key: StorageKey,
         value: StorageValue,
     ) -> Result<StateLoad<SStoreResult>, EvmInternalsError> {
-        // Convert Address to ChainAddress using the active chain_id
-        let chain_address = ChainAddress::new(self.chain_id, address);
-        self.journal.sstore(chain_address, key, value).map_err(EvmInternalsError::database)
+        self.journal.sstore(address, key, value).map_err(EvmInternalsError::database)
     }
 
     fn log(&mut self, log: Log) {
@@ -185,12 +161,12 @@ pub struct EvmInternals<'a> {
 
 impl<'a> EvmInternals<'a> {
     /// Creates a new [`EvmInternals`] instance.
-    pub fn new<T>(journal: &'a mut T, block_env: &'a dyn Block, chain_id: u64) -> Self
+    pub fn new<T>(journal: &'a mut T, block_env: &'a dyn Block) -> Self
     where
-        T: JournalTr<Database: revm::database_interface::MultiChainDatabase> + Debug,
-        <T::Database as revm::database_interface::MultiChainDatabase>::Error: Send + Sync + 'static,
+        T: JournalTr<Database: revm::database_interface::Database> + Debug,
+        <T::Database as revm::database_interface::Database>::Error: Send + Sync + 'static,
     {
-        Self { internals: Box::new(EvmInternalsImpl { journal, chain_id }), block_env }
+        Self { internals: Box::new(EvmInternalsImpl { journal }), block_env }
     }
 
     /// Returns the  evm's block information.
@@ -208,13 +184,11 @@ impl<'a> EvmInternals<'a> {
         self.block_env.timestamp()
     }
 
-    /// Returns a mutable reference to [`MultiChainDatabase`] implementation with erased error type.
+    /// Returns a mutable reference to [`revm::database_interface::Database`] implementation with erased error type.
     ///
     /// Users should prefer using other methods for accessing state that rely on cached state in the
     /// journal instead.
-    pub fn db_mut(
-        &mut self,
-    ) -> impl revm::database_interface::MultiChainDatabase<Error = ErasedError> + '_ {
+    pub fn db_mut(&mut self) -> impl revm::database_interface::Database<Error = ErasedError> + '_ {
         &mut *self.internals
     }
 

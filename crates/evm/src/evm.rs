@@ -9,16 +9,16 @@ use revm::{
         result::{HaltReasonTr, ResultAndState},
         ContextTr,
     },
-    database_interface::{MultiChainDatabase, MultiChainDatabaseCommit},
+    database_interface::{Database, DatabaseCommit},
     inspector::{JournalExt, NoOpInspector},
-    primitives::{ChainAddress, HashMap},
+    primitives::{Address, HashMap},
+    state::EvmState,
     Inspector,
 };
 
-/// Helper trait to bound [`MultiChainDatabase::Error`] with common requirements.
-pub trait MultiDatabase: MultiChainDatabase<Error: Error + Send + Sync + 'static> + Debug {}
-impl<T> MultiDatabase for T where T: MultiChainDatabase<Error: Error + Send + Sync + 'static> + Debug
-{}
+/// Helper trait to bound [`Database::Error`] with common requirements.
+pub trait MultiDatabase: Database<Error: Error + Send + Sync + 'static> + Debug {}
+impl<T> MultiDatabase for T where T: Database<Error: Error + Send + Sync + 'static> + Debug {}
 
 /// An instance of an ethereum virtual machine.
 ///
@@ -114,8 +114,8 @@ pub trait Evm {
     /// covering edge cases when beneficiary is set to the system contract address.
     fn transact_system_call(
         &mut self,
-        caller: ChainAddress,
-        contract: ChainAddress,
+        caller: Address,
+        contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error>;
 
@@ -129,16 +129,28 @@ pub trait Evm {
         self.components_mut().0
     }
 
+    /// Commit the state changes returned by [`Evm::transact`] to the underlying database.
+    ///
+    /// Default implementation commits the state to `Self::DB` directly. Implementers with
+    /// additional commit requirements (for example multi-chain state staged out-of-band) can
+    /// override this to ensure all changes are persisted.
+    fn commit_state(&mut self, state: EvmState)
+    where
+        Self::DB: DatabaseCommit,
+    {
+        self.db_mut().commit(state)
+    }
+
     /// Executes a transaction and commits the state changes to the underlying database.
     fn transact_commit(
         &mut self,
         tx: impl IntoTxEnv<Self::Tx>,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error>
     where
-        Self::DB: MultiChainDatabaseCommit,
+        Self::DB: DatabaseCommit,
     {
         let ResultAndState { result, state } = self.transact(tx)?;
-        self.db_mut().commit_multi(state);
+        self.commit_state(state);
 
         Ok(result)
     }
@@ -265,7 +277,7 @@ pub trait EvmFactoryExt: EvmFactory {
         fused_inspector: I,
     ) -> TxTracer<Self::Evm<DB, I>>
     where
-        DB: MultiDatabase + MultiChainDatabaseCommit,
+        DB: MultiDatabase + DatabaseCommit,
         I: Inspector<Self::Context<DB>> + Clone,
     {
         TxTracer::new(self.create_evm_with_inspector(db, input, fused_inspector))

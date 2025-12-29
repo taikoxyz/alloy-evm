@@ -20,12 +20,13 @@ use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Log, B256};
+use gwyneth_types::GwynethJournal;
 use revm::{
     context::result::ExecutionResult,
     context_interface::result::ResultAndState,
     database::State,
-    database_interface::MultiChainDatabaseCommit,
-    primitives::{ChainAddress, GwynethJournal, HashMap},
+    database_interface::DatabaseCommit,
+    primitives::HashMap,
     Inspector,
 };
 
@@ -171,12 +172,9 @@ where
 
         let gas_used = result.gas_used();
 
-        // Track gas used per chain
-        for (chain_id, chain_gas) in result.gas_used_per_chain() {
-            *self.gas_used_per_chain.entry(chain_id).or_default() += chain_gas;
-        }
-
-        self.gwyneth_journal.push(result.gwyneth_output().journal);
+        let chain_id = self.evm.chain_id();
+        *self.gas_used_per_chain.entry(chain_id).or_default() += gas_used;
+        self.gwyneth_journal.push(GwynethJournal::default());
 
         // append gas used
         self.gas_used += gas_used;
@@ -191,7 +189,7 @@ where
         }));
 
         // Commit the state changes.
-        self.evm.db_mut().commit_multi(state);
+        self.evm.commit_state(state);
 
         Ok(Some(gas_used))
     }
@@ -240,7 +238,7 @@ where
                 .drain_balances(
                     dao_fork::DAO_HARDFORK_ACCOUNTS
                         .iter()
-                        .map(|addr| ChainAddress::new(chain_id, *addr)),
+                        .copied(),
                 )
                 .map_err(|_| BlockValidationError::IncrementBalanceFailed)?
                 .into_iter()
@@ -256,7 +254,7 @@ where
             .increment_balances(
                 balance_increments
                     .iter()
-                    .map(|(addr, balance)| (ChainAddress::new(chain_id, *addr), *balance)),
+                    .map(|(addr, balance)| (*addr, *balance)),
             )
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
 

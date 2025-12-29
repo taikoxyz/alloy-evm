@@ -7,17 +7,15 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use revm::{
-    context::{BlockEnv, CfgEnv, ContextSetters, Evm as RevmEvm, TxEnv},
+    context::{BlockEnv, CfgEnv, Evm as RevmEvm, TxEnv},
     context_interface::result::{EVMError, HaltReason, ResultAndState},
-    handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, PrecompileProvider},
-    inspector::{inspectors::GwynethCompositeInspector, NoOpInspector},
+    handler::{instructions::EthInstructions, EthFrame, PrecompileProvider},
+    inspector::NoOpInspector,
     interpreter::{interpreter::EthInterpreter, InterpreterResult},
     precompile::{PrecompileSpecId, Precompiles},
-    primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind},
-    AutoSetupBuilder, Context, ExecuteEvm, InspectEvm, InspectSystemCallEvm, Inspector,
-    SystemCallEvm,
+    primitives::{hardfork::SpecId, Address, HashMap},
+    Context, ExecuteEvm, InspectEvm, InspectSystemCallEvm, Inspector, SystemCallEvm,
 };
-use revm::MainContext;
 
 mod block;
 pub use block::*;
@@ -93,31 +91,56 @@ impl<DB: MultiDatabase, I> EthEvmBuilder<DB, I> {
 
         let precompiles = match precompiles {
             Some(p) => p,
-            None => PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(cfg_env.spec),
-                cfg_env.xchain,
-            )),
+            None => PrecompilesMap::from_static(Precompiles::new(PrecompileSpecId::from_spec_id(
+                cfg_env.spec,
+            ))),
         };
 
-        let gwyneth_inspector = GwynethCompositeInspector::wrap(inspector);
-        let inner = Context::mainnet()
-            .with_blocks(block_env)
-            .with_cfg(cfg_env)
-            .with_db(db)
-            .build_gwyneth_with_inspector(gwyneth_inspector)
-            .with_precompiles(precompiles);
+        let chain_id = cfg_env.chain_id;
+        let blocks = block_env;
+        let block = blocks
+            .get(&chain_id)
+            .or_else(|| blocks.get(&0))
+            .cloned()
+            .unwrap_or_default();
 
-        EthEvm { inner, inspect }
+        let ctx =
+            Context::<BlockEnv, TxEnv, CfgEnv, DB>::new(db, cfg_env.spec).with_cfg(cfg_env).with_block(block);
+        let inner = RevmEvm {
+            ctx,
+            inspector,
+            instruction: EthInstructions::new_mainnet(),
+            precompiles,
+            frame_stack: Default::default(),
+        };
+
+        EthEvm { inner, blocks, inspect }
     }
 }
 
-/// Applies multi-chain configuration overrides from the given `EvmEnv` to the provided
-/// `EthEvmContext`.
-pub fn apply_multichain_overrides<DB: MultiDatabase>(ctx: &mut EthEvmContext<DB>, env: &EvmEnv) {
-    ctx.set_blocks(env.block_env.clone());
-    ctx.modify_cfg(|cfg| {
-        *cfg = env.cfg_env.clone();
-    });
+/// Applies multi-chain configuration overrides from the given `EvmEnv`.
+pub fn apply_multichain_overrides<DB, I, PRECOMPILE>(
+    evm: &mut EthEvm<DB, I, PRECOMPILE>,
+    env: &EvmEnv,
+) where
+    DB: MultiDatabase,
+    I: Inspector<EthEvmContext<DB>>,
+    PRECOMPILE: PrecompileProvider<EthEvmContext<DB>, Output = InterpreterResult>,
+{
+    evm.blocks = env.block_env.clone();
+
+    let chain_id = env.cfg_env.chain_id;
+    let maybe_block = evm
+        .blocks
+        .get(&chain_id)
+        .or_else(|| evm.blocks.get(&0))
+        .cloned();
+    if let Some(block) = maybe_block {
+        evm.inner.ctx.modify_block(|b| *b = block);
+    }
+
+    evm.inner.ctx.modify_cfg(|cfg| *cfg = env.cfg_env.clone());
+    let _ = evm.inner.precompiles.set_spec(env.cfg_env.spec);
 }
 
 /// Ethereum EVM implementation.
@@ -126,14 +149,15 @@ pub fn apply_multichain_overrides<DB: MultiDatabase>(ctx: &mut EthEvmContext<DB>
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// [`RevmEvm`] type.
 #[expect(missing_debug_implementations)]
-pub struct EthEvm<DB: MultiDatabase, I, PRECOMPILE = EthPrecompiles> {
+pub struct EthEvm<DB: MultiDatabase, I, PRECOMPILE = PrecompilesMap> {
     inner: RevmEvm<
         EthEvmContext<DB>,
-        GwynethCompositeInspector<I>,
+        I,
         EthInstructions<EthInterpreter, EthEvmContext<DB>>,
         PRECOMPILE,
         EthFrame,
     >,
+    blocks: HashMap<u64, BlockEnv>,
     inspect: bool,
 }
 
@@ -142,17 +166,18 @@ impl<DB: MultiDatabase, I, PRECOMPILE> EthEvm<DB, I, PRECOMPILE> {
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`RevmEvm`] should be invoked on [`Evm::transact`].
-    pub const fn new(
+    pub fn new(
         evm: RevmEvm<
             EthEvmContext<DB>,
-            GwynethCompositeInspector<I>,
+            I,
             EthInstructions<EthInterpreter, EthEvmContext<DB>>,
             PRECOMPILE,
             EthFrame,
         >,
+        blocks: HashMap<u64, BlockEnv>,
         inspect: bool,
     ) -> Self {
-        Self { inner: evm, inspect }
+        Self { inner: evm, blocks, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -160,7 +185,7 @@ impl<DB: MultiDatabase, I, PRECOMPILE> EthEvm<DB, I, PRECOMPILE> {
         self,
     ) -> RevmEvm<
         EthEvmContext<DB>,
-        GwynethCompositeInspector<I>,
+        I,
         EthInstructions<EthInterpreter, EthEvmContext<DB>>,
         PRECOMPILE,
         EthFrame,
@@ -210,7 +235,7 @@ where
     type Inspector = I;
 
     fn blocks(&self) -> &HashMap<u64, BlockEnv> {
-        &self.inner.ctx.block
+        &self.blocks
     }
 
     fn chain_id(&self) -> u64 {
@@ -223,22 +248,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // For legacy transactions without a chain_id, use the default from config
         if tx.chain_id.is_none() {
-            let default_chain_id = if let Some(parent_chain_id) = self.cfg.parent_chain_id {
-                parent_chain_id
-            } else {
-                self.cfg.chain_id
-            };
-            tx.chain_id = Some(default_chain_id);
-
-            // Also update the caller and call addresses
-            tx.caller = ChainAddress::new(default_chain_id, tx.caller.1);
-            if let TxKind::Call(ref mut addr) = tx.kind {
-                *addr = ChainAddress::new(default_chain_id, addr.1);
-            }
+            tx.chain_id = Some(self.chain_id());
         }
-
-        // Set chain_ids from available blocks
-        tx.chain_ids = Some(self.blocks().keys().cloned().collect());
 
         if self.inspect {
             self.inner.inspect_tx(tx)
@@ -249,8 +260,8 @@ where
 
     fn transact_system_call(
         &mut self,
-        caller: ChainAddress,
-        contract: ChainAddress,
+        caller: Address,
+        contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // When inspection is enabled, use the inspect path so multi-chain gas tracking is populated.
@@ -268,7 +279,10 @@ where
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
         let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.ctx;
 
-        (journaled_state.database, EvmEnv { block_env, cfg_env })
+        let mut blocks = self.blocks;
+        blocks.insert(cfg_env.chain_id, block_env);
+
+        (journaled_state.database, EvmEnv { block_env: blocks, cfg_env })
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
@@ -276,17 +290,13 @@ where
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
-        (
-            &self.inner.ctx.journaled_state.database,
-            &self.inner.inspector.custom_inspector,
-            &self.inner.precompiles,
-        )
+        (&self.inner.ctx.journaled_state.database, &self.inner.inspector, &self.inner.precompiles)
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
         (
             &mut self.inner.ctx.journaled_state.database,
-            &mut self.inner.inspector.custom_inspector,
+            &mut self.inner.inspector,
             &mut self.inner.precompiles,
         )
     }
@@ -307,9 +317,8 @@ impl EvmFactory for EthEvmFactory {
     type Precompiles = PrecompilesMap;
 
     fn create_evm<DB: MultiDatabase>(&self, db: DB, input: EvmEnv) -> Self::Evm<DB, NoOpInspector> {
-        let env_clone = input.clone();
-        let mut evm = EthEvmBuilder::new(db, env_clone).build();
-        apply_multichain_overrides(evm.ctx_mut(), &input);
+        let mut evm = EthEvmBuilder::new(db, input.clone()).build();
+        apply_multichain_overrides(&mut evm, &input);
         evm
     }
 
@@ -319,9 +328,8 @@ impl EvmFactory for EthEvmFactory {
         input: EvmEnv,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        let env_clone = input.clone();
-        let mut evm = EthEvmBuilder::new(db, env_clone).activate_inspector(inspector).build();
-        apply_multichain_overrides(evm.ctx_mut(), &input);
+        let mut evm = EthEvmBuilder::new(db, input.clone()).activate_inspector(inspector).build();
+        apply_multichain_overrides(&mut evm, &input);
         evm
     }
 }
@@ -331,7 +339,7 @@ mod tests {
     use super::*;
     use alloy_primitives::address;
     use revm::{
-        database::{EmptyDB, MultiEmptyDB},
+        database::EmptyDB,
         inspector::NoOpInspector,
         primitives::{hardfork::SpecId, HashMap},
     };
@@ -365,9 +373,7 @@ mod tests {
             block_map.insert(1, BlockEnv::default());
             let early_env = EvmEnv { block_env: block_map, cfg_env: early_cfg_env };
             let factory = EthEvmFactory;
-            let mut multi_db = MultiEmptyDB::new();
-            multi_db.add_chain(1, EmptyDB::default());
-            let mut early_evm = factory.create_evm(multi_db, early_env);
+            let mut early_evm = factory.create_evm(EmptyDB::default(), early_env);
 
             // precompile should NOT be available in early spec
             assert!(
@@ -382,9 +388,7 @@ mod tests {
             let mut block_map = HashMap::default();
             block_map.insert(1, BlockEnv::default());
             let later_env = EvmEnv { block_env: block_map, cfg_env: later_cfg_env };
-            let mut multi_db = MultiEmptyDB::new();
-            multi_db.add_chain(1, EmptyDB::default());
-            let mut later_evm = factory.create_evm(multi_db, later_env);
+            let mut later_evm = factory.create_evm(EmptyDB::default(), later_env);
 
             // precompile should be available in later spec
             assert!(
@@ -398,10 +402,7 @@ mod tests {
     fn factory_applies_multichain_overrides() {
         let mut cfg_env = CfgEnv::default();
         cfg_env.chain_id = 100;
-        cfg_env.xchain = true;
-        cfg_env.parent_chain_id = Some(1);
-        cfg_env.extension_oracle = Some(address!("0x0000000000000000000000000000000000000100"));
-        cfg_env.gwyneth = Some(address!("0x0000000000000000000000000000000000000200"));
+        cfg_env.spec = SpecId::CANCUN;
 
         let mut block_map = HashMap::default();
         block_map.insert(cfg_env.chain_id, BlockEnv::default());
@@ -411,22 +412,15 @@ mod tests {
         let env = EvmEnv { block_env: block_map, cfg_env: cfg_env.clone() };
 
         let factory = EthEvmFactory;
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(1, EmptyDB::default());
-        multi_db.add_chain(cfg_env.chain_id, EmptyDB::default());
-
-        let evm = factory.create_evm(multi_db, env.clone());
+        let evm = factory.create_evm(EmptyDB::default(), env.clone());
         let ctx = evm.ctx();
 
         let cfg = &ctx.cfg;
-        assert!(cfg.xchain, "xchain flag should propagate to context");
-        assert_eq!(cfg.parent_chain_id, env.cfg_env.parent_chain_id);
-        assert_eq!(cfg.extension_oracle, env.cfg_env.extension_oracle);
-        assert_eq!(cfg.gwyneth, env.cfg_env.gwyneth);
         assert_eq!(cfg.chain_id, env.cfg_env.chain_id);
+        assert_eq!(cfg.spec, env.cfg_env.spec);
 
         for chain_id in expected_blocks.keys() {
-            assert!(ctx.block.contains_key(chain_id), "missing block env for chain {}", chain_id);
+            assert!(evm.blocks().contains_key(chain_id), "missing block env for chain {}", chain_id);
         }
     }
 
@@ -434,9 +428,7 @@ mod tests {
     fn inspector_factory_keeps_overrides() {
         let mut cfg_env = CfgEnv::default();
         cfg_env.chain_id = 200;
-        cfg_env.xchain = true;
-        cfg_env.parent_chain_id = Some(1);
-        cfg_env.extension_oracle = Some(address!("0x0000000000000000000000000000000000000300"));
+        cfg_env.spec = SpecId::BERLIN;
 
         let mut block_map = HashMap::default();
         block_map.insert(cfg_env.chain_id, BlockEnv::default());
@@ -445,17 +437,13 @@ mod tests {
         let env = EvmEnv { block_env: block_map, cfg_env: cfg_env.clone() };
 
         let factory = EthEvmFactory;
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(1, EmptyDB::default());
-        multi_db.add_chain(cfg_env.chain_id, EmptyDB::default());
-
         let inspector = NoOpInspector {};
-        let evm = factory.create_evm_with_inspector(multi_db, env.clone(), inspector);
+        let evm = factory.create_evm_with_inspector(EmptyDB::default(), env.clone(), inspector);
         let ctx = evm.ctx();
 
-        assert!(ctx.cfg.xchain, "xchain flag should persist when using inspector path");
-        assert_eq!(ctx.cfg.parent_chain_id, env.cfg_env.parent_chain_id);
-        assert!(ctx.block.contains_key(&cfg_env.chain_id));
-        assert!(ctx.block.contains_key(&1));
+        assert_eq!(ctx.cfg.chain_id, env.cfg_env.chain_id);
+        assert_eq!(ctx.cfg.spec, env.cfg_env.spec);
+        assert!(evm.blocks().contains_key(&cfg_env.chain_id));
+        assert!(evm.blocks().contains_key(&1));
     }
 }

@@ -21,28 +21,27 @@ pub use halt_reason::GwynethHaltReason;
 pub use inspector::GwynethInspector;
 
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloy_evm::{Evm, EvmEnv, MultiDatabase};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
 use gwyneth_types::ChainState;
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure, GwynethPrecompileProvider,
-    HardFailureInspector, L2OverlayDb, TrackingJournal,
+    GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure,
+    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingContextExt,
+    TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
     context_interface::{
         journaled_state::JournalTr,
-        local::LocalContextTr,
         result::{EVMError, InvalidTransaction, ResultAndState},
         ContextSetters, ContextTr,
     },
     handler::{instructions::EthInstructions, EthFrame, Handler},
     inspector::{Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
-    primitives::hardfork::SpecId,
+    primitives::{hardfork::SpecId, HashMap},
 };
 
 type InnerContext<DB> = GwynethContext<Context<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>>;
@@ -58,8 +57,9 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 /// Gwyneth-flavoured EVM implementation that wraps the REVM context backed by the
 /// Gwyneth tracking journal and precompile set.
 #[allow(missing_debug_implementations)]
-pub struct GwynethEvm<DB: MultiDatabase, I> {
+pub struct GwynethEvm<DB: MultiDatabase + gwyneth_types::ChainSwitchable, I> {
     inner: InnerEvm<DB, I>,
+    blocks: HashMap<u64, BlockEnv>,
 }
 
 impl<DB: MultiDatabase + gwyneth_types::ChainSwitchable, I> GwynethEvm<DB, I>
@@ -83,31 +83,17 @@ where
         inspect: bool,
     ) -> Self {
         let EvmEnv { block_env, cfg_env } = env;
-        let mut ctx =
-            Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec);
+        let chain_id = cfg_env.chain_id;
+        let blocks = block_env;
+        let block = blocks
+            .get(&chain_id)
+            .or_else(|| blocks.get(&0))
+            .cloned()
+            .unwrap_or_default();
 
-        // Mirror `revm::builder_auto_setup`: auto-install xchain helpers required for
-        // extension oracle gas accounting and gwynethForwarder support detection.
-        if ctx.local.gwyneth_support_detector.is_none() {
-            if let Some(sender) = cfg_env.extension_oracle {
-                let detector =
-                    Arc::new(revm::gwyneth_support_detector::GwynethSupportDetector::new(
-                        cfg_env.spec,
-                        sender,
-                    ));
-                ctx.local.gwyneth_support_detector = Some(detector);
-            }
-        }
-
-        if ctx.local.extension_oracle_gas_calculator.is_none() {
-            let calculator = Arc::new(revm::SimpleExtensionOracleCalculator::new_with_exactness(
-                cfg_env.spec,
-                cfg_env.gwyneth_exactness,
-            ));
-            ctx.local.extension_oracle_gas_calculator = Some(calculator);
-        }
-
-        let ctx = ctx.with_blocks(block_env).with_cfg(cfg_env);
+        let ctx = Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec)
+            .with_cfg(cfg_env)
+            .with_block(block);
         let gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
         let inspector = GwynethInspector::new(inspector, inspect);
         let inner = InnerEvm {
@@ -117,7 +103,7 @@ where
             precompiles: GwynethPrecompileProvider::default(),
             frame_stack: Default::default(),
         };
-        Self { inner }
+        Self { inner, blocks }
     }
 
     fn ctx(&self) -> &InnerContext<DB> {
@@ -158,6 +144,14 @@ where
         self.inner.ctx.journal.clone()
     }
 
+    /// Drain callsite records captured by the always-on `JournalInspector`.
+    ///
+    /// This is a per-transaction buffer: `transact*` resets it before execution and callers
+    /// should drain it after the transaction completes.
+    pub fn take_callsite_records(&mut self) -> alloc::vec::Vec<gwyneth_types::oracle::CallsiteRecord> {
+        self.inner.inspector.journal_mut().take_callsite_records()
+    }
+
     /// Get a reference to the underlying database.
     pub fn db(&self) -> &DB {
         self.inner.ctx.base.journaled_state.db()
@@ -181,25 +175,36 @@ where
         &mut self.inner.ctx.base.journaled_state
     }
 
-    /// Commit state changes with multi-chain support.
-    ///
-    /// This method properly handles cross-chain state changes by:
-    /// 1. Getting per-chain state from the tracking journal
-    /// 2. Switching to each chain and committing its changes
-    /// 3. Restoring the original chain
-    ///
-    /// This is the correct way to commit state after executing transactions
-    /// that may have cross-chain effects.
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - The state to commit (used as fallback if no per-chain tracking)
-    pub fn commit_multi_chain(&mut self, state: revm::state::EvmState)
-    where
-        DB: revm::database_interface::MultiChainDatabaseCommit,
-    {
-        self.db_mut().commit_multi(state);
+    /// Override the parent (L1) chain id used for cross-chain classification.
+    pub fn set_parent_chain_id(&mut self, parent_chain_id: Option<u64>) {
+        self.inner.ctx.set_parent_chain_id(parent_chain_id);
     }
+
+    /// Enable or disable xchain semantics.
+    pub fn set_xchain_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_xchain_enabled(enabled);
+    }
+
+    /// Override capability toggles for chain switching and prewarming.
+    pub fn set_capabilities(&mut self, capabilities: GwynethCapabilities) {
+        self.inner.ctx.set_capabilities(capabilities);
+    }
+
+    /// Mark gwyneth config as present (used for tracking-only execution when xchain is disabled).
+    pub fn set_gwyneth_configured(&mut self, configured: bool) {
+        self.inner.ctx.set_gwyneth_configured(configured);
+    }
+
+    /// Mark extension oracle config as present (used for tracking-only execution when xchain is disabled).
+    pub fn set_extension_oracle_configured(&mut self, configured: bool) {
+        self.inner.ctx.set_extension_oracle_configured(configured);
+    }
+
+    /// Override allowed chain ids for XCALLOPTIONS routing.
+    pub fn set_allowed_chain_ids(&mut self, allowed_chain_ids: alloc::vec::Vec<u64>) {
+        self.inner.ctx.set_allowed_chain_ids(allowed_chain_ids);
+    }
+
 }
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
@@ -212,15 +217,14 @@ where
 {
     type DB = DB;
     type Tx = TxEnv;
-    type Error =
-        EVMError<<DB as revm::database_interface::MultiChainDatabase>::Error, InvalidTransaction>;
+    type Error = EVMError<<DB as revm::Database>::Error, InvalidTransaction>;
     type HaltReason = GwynethHaltReason;
     type Spec = SpecId;
     type Precompiles = GwynethPrecompileProvider;
     type Inspector = GwynethInspector<I>;
 
     fn blocks(&self) -> &revm::primitives::HashMap<u64, BlockEnv> {
-        &self.ctx().base.block
+        &self.blocks
     }
 
     fn chain_id(&self) -> u64 {
@@ -229,28 +233,28 @@ where
 
     fn transact_raw(
         &mut self,
-        tx: Self::Tx,
+        mut tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // In multi-chain execution, the authoritative "tx origin chain" is the caller's chain,
-        // not the EIP-155 `chain_id` field which may be unset or populated with a legacy default.
-        let origin_chain_id = tx.caller.chain_id();
+        if tx.chain_id.is_none() {
+            tx.chain_id = Some(self.chain_id());
+        }
+        let origin_chain_id = tx.chain_id.unwrap_or(self.chain_id());
 
         // Clear cross-transaction Gwyneth state and align the full execution context
         // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
         self.inner.ctx.take_cross_chain_intent();
         self.inner.ctx.take_cross_chain_route();
 
-        let cfg = &self.inner.ctx.base.cfg;
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            cfg.xchain,
-            cfg.parent_chain_id,
-            cfg.gwyneth.is_some(),
-            cfg.extension_oracle.is_some(),
+            self.inner.ctx.is_xchain_enabled(),
+            self.inner.ctx.parent_chain_id(),
+            self.inner.ctx.gwyneth_configured(),
+            self.inner.ctx.extension_oracle_configured(),
         );
-        let is_direct = cfg.parent_chain_id == Some(origin_chain_id);
+        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
         let start_mode = gwyneth_types::ExecutionMode::from_context(
             origin_chain_id,
-            cfg.parent_chain_id,
+            self.inner.ctx.parent_chain_id(),
             is_direct,
             mode_tracking_enabled,
         );
@@ -315,12 +319,13 @@ where
             used.insert(details.chain_id, gas_used);
             self.inner
                 .ctx
-                .local_mut()
                 .set_per_chain_gas(used, revm::primitives::HashMap::default());
 
-            // Avoid leaking any EO adjustments into the normalized surface.
-            self.inner.ctx.local_mut().set_oracle_gas_adjustment(None);
-            let _ = self.inner.ctx.local_mut().take_oracle_gas_adjustment_per_chain();
+            // Keep the journal's per-chain gas accounting consistent with the normalized surface.
+            // Hard failures consume all gas and attribute it exclusively to the trigger chain.
+            let journal = self.inner.ctx.gwyneth_journal_mut();
+            journal.gas_used_per_chain.clear();
+            journal.gas_used_per_chain.insert(details.chain_id, gas_used);
         }
 
         handler.post_execution(
@@ -335,17 +340,12 @@ where
 
         if let Some(hf) = hard_failure {
             exec_result = match exec_result {
-                revm::context_interface::result::ExecutionResult::Halt {
-                    gas_used,
-                    gas_used_per_chain,
-                    gwyneth,
-                    ..
-                } => revm::context_interface::result::ExecutionResult::Halt {
-                    reason: GwynethHaltReason::GwynethHardFailure(hf),
-                    gas_used,
-                    gas_used_per_chain,
-                    gwyneth,
-                },
+                revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } => {
+                    revm::context_interface::result::ExecutionResult::Halt {
+                        reason: GwynethHaltReason::GwynethHardFailure(hf),
+                        gas_used,
+                    }
+                }
                 other => other,
             };
         }
@@ -354,10 +354,64 @@ where
         Ok(ResultAndState::new(exec_result, state))
     }
 
+    fn commit_state(&mut self, state: revm::state::EvmState)
+    where
+        Self::DB: revm::database_interface::DatabaseCommit,
+    {
+        let origin = self.inner.ctx.capture_chain_state();
+
+        self.db_mut().commit(state);
+
+        let mut pending = self
+            .inner
+            .ctx
+            .tracking_journal_mut()
+            .take_pending_commit_state();
+
+        #[cfg(feature = "std")]
+        if std::env::var_os("GWYNETH_DEBUG_MULTI_COMMIT").is_some() {
+            let mut pending_chains: alloc::vec::Vec<u64> = pending.keys().copied().collect();
+            pending_chains.sort_unstable();
+            eprintln!(
+                "[alloy-gwyneth-evm][commit_state] origin_chain={} pending_chains={:?}",
+                origin.db_chain_id, pending_chains
+            );
+        }
+
+        for (chain_id, changes) in pending.drain() {
+            if changes.is_empty() {
+                continue;
+            }
+
+            #[cfg(feature = "std")]
+            if std::env::var_os("GWYNETH_DEBUG_MULTI_COMMIT").is_some() {
+                eprintln!(
+                    "[alloy-gwyneth-evm][commit_state] committing chain={} accounts={}",
+                    chain_id,
+                    changes.len()
+                );
+            }
+
+            if self
+                .inner
+                .ctx
+                .apply_chain_state(ChainState::new(chain_id, chain_id, origin.execution_mode))
+                .is_ok()
+            {
+                self.db_mut().commit(changes);
+            } else {
+                debug_assert!(false, "commit_state: missing overlay for chain {}", chain_id);
+            }
+        }
+
+        // Restore full chain state for subsequent calls.
+        let _ = self.inner.ctx.apply_chain_state(origin);
+    }
+
     fn transact_system_call(
         &mut self,
-        caller: revm::primitives::ChainAddress,
-        contract: revm::primitives::ChainAddress,
+        caller: revm::primitives::Address,
+        contract: revm::primitives::Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         use revm::handler::system_call::SystemCallTx;
@@ -367,18 +421,17 @@ where
         self.inner.ctx.take_cross_chain_intent();
         self.inner.ctx.take_cross_chain_route();
 
-        let origin_chain_id = contract.0;
-        let cfg = &self.inner.ctx.base.cfg;
+        let origin_chain_id = self.chain_id();
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            cfg.xchain,
-            cfg.parent_chain_id,
-            cfg.gwyneth.is_some(),
-            cfg.extension_oracle.is_some(),
+            self.inner.ctx.is_xchain_enabled(),
+            self.inner.ctx.parent_chain_id(),
+            self.inner.ctx.gwyneth_configured(),
+            self.inner.ctx.extension_oracle_configured(),
         );
-        let is_direct = cfg.parent_chain_id == Some(origin_chain_id);
+        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
         let start_mode = gwyneth_types::ExecutionMode::from_context(
             origin_chain_id,
-            cfg.parent_chain_id,
+            self.inner.ctx.parent_chain_id(),
             is_direct,
             mode_tracking_enabled,
         );
@@ -433,11 +486,12 @@ where
             used.insert(details.chain_id, gas_used);
             self.inner
                 .ctx
-                .local_mut()
                 .set_per_chain_gas(used, revm::primitives::HashMap::default());
 
-            self.inner.ctx.local_mut().set_oracle_gas_adjustment(None);
-            let _ = self.inner.ctx.local_mut().take_oracle_gas_adjustment_per_chain();
+            // Keep the journal's per-chain gas accounting consistent with the normalized surface.
+            let journal = self.inner.ctx.gwyneth_journal_mut();
+            journal.gas_used_per_chain.clear();
+            journal.gas_used_per_chain.insert(details.chain_id, gas_used);
         }
 
         let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
@@ -445,17 +499,12 @@ where
 
         if let Some(hf) = hard_failure {
             exec_result = match exec_result {
-                revm::context_interface::result::ExecutionResult::Halt {
-                    gas_used,
-                    gas_used_per_chain,
-                    gwyneth,
-                    ..
-                } => revm::context_interface::result::ExecutionResult::Halt {
-                    reason: GwynethHaltReason::GwynethHardFailure(hf),
-                    gas_used,
-                    gas_used_per_chain,
-                    gwyneth,
-                },
+                revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } => {
+                    revm::context_interface::result::ExecutionResult::Halt {
+                        reason: GwynethHaltReason::GwynethHardFailure(hf),
+                        gas_used,
+                    }
+                }
                 other => other,
             };
         }
@@ -465,11 +514,13 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let InnerEvm { ctx, .. } = self.inner;
+        let Self { inner, mut blocks } = self;
+        let InnerEvm { ctx, .. } = inner;
         let GwynethContext { base, .. } = ctx;
         let Context { block, cfg, journaled_state, .. } = base;
-        let db = journaled_state.database;
-        (db, EvmEnv { block_env: block, cfg_env: cfg })
+        let db = journaled_state.into_db();
+        blocks.insert(cfg.chain_id, block);
+        (db, EvmEnv { block_env: blocks, cfg_env: cfg })
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
@@ -505,7 +556,7 @@ where
         block_env: BlockEnv,
         cfg_env: CfgEnv,
     ) -> Self {
-        let mut overlay = L2OverlayDb::new(l1_db);
+        let mut overlay = L2OverlayDb::new(gwyneth_types::L1_CHAIN_ID, l1_db);
         overlay.add_l2_overlay(chain_id, l2_db);
         let _ = overlay.switch_to_chain(chain_id);
         let mut blocks = revm::primitives::HashMap::default();
@@ -575,7 +626,7 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
         L2DB::Error: Debug + Send + Sync + 'static,
         I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>,
     {
-        let mut overlay = L2OverlayDb::new(l1_db);
+        let mut overlay = L2OverlayDb::new(gwyneth_types::L1_CHAIN_ID, l1_db);
         overlay.add_l2_overlay(chain_id, l2_db);
         let _ = overlay.switch_to_chain(chain_id);
         GwynethEvm::from_env(overlay, env, inspector, self.detector_config.clone(), true)

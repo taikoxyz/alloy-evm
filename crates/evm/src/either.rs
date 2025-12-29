@@ -2,7 +2,7 @@ use crate::{Evm, EvmEnv};
 use alloy_primitives::Bytes;
 use revm::{
     context::{either, BlockEnv},
-    primitives::{ChainAddress, HashMap},
+    primitives::{Address, HashMap},
 };
 
 impl<L, R> Evm for either::Either<L, R>
@@ -50,8 +50,8 @@ where
 
     fn transact_system_call(
         &mut self,
-        caller: ChainAddress,
-        contract: ChainAddress,
+        caller: Address,
+        contract: Address,
         data: Bytes,
     ) -> Result<revm::context::result::ResultAndState<Self::HaltReason>, Self::Error> {
         either::for_both!(self, evm => evm.transact_system_call(caller, contract, data))
@@ -62,7 +62,7 @@ where
         tx: impl crate::IntoTxEnv<Self::Tx>,
     ) -> Result<revm::context::result::ExecutionResult<Self::HaltReason>, Self::Error>
     where
-        Self::DB: revm::database_interface::MultiChainDatabaseCommit,
+        Self::DB: revm::database_interface::DatabaseCommit,
     {
         either::for_both!(self, evm => evm.transact_commit(tx))
     }

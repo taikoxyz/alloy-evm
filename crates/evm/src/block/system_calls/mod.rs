@@ -11,7 +11,7 @@ use alloy_eips::{
 };
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Bytes, B256};
-use revm::{database_interface::MultiChainDatabaseCommit, primitives::HashMap, state::EvmState};
+use revm::{database_interface::DatabaseCommit, primitives::HashMap, state::EvmState};
 
 use super::{StateChangePostBlockSource, StateChangePreBlockSource, StateChangeSource};
 
@@ -53,7 +53,7 @@ where
     pub fn apply_pre_execution_changes(
         &mut self,
         headers: HashMap<u64, impl BlockHeader>,
-        evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
+        evm: &mut impl Evm<DB: DatabaseCommit>,
     ) -> Result<(), BlockExecutionError> {
         for (&chain_id, header) in headers.iter() {
             //println!("[alloy-evm] applying pre execution for {} block {}: {:?} {:?}", chain_id, header.number(), header.parent_hash(), header.parent_beacon_block_root());
@@ -67,7 +67,7 @@ where
     /// Apply post execution changes.
     pub fn apply_post_execution_changes(
         &mut self,
-        evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
+        evm: &mut impl Evm<DB: DatabaseCommit>,
     ) -> Result<Requests, BlockExecutionError> {
         let mut requests = Requests::default();
 
@@ -90,7 +90,7 @@ where
     pub fn apply_blockhashes_contract_call(
         &mut self,
         parent_block_hash: B256,
-        evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
+        evm: &mut impl Evm<DB: DatabaseCommit>,
         chain_id: u64,
     ) -> Result<(), BlockExecutionError> {
         let result_and_state = eip2935::transact_blockhashes_contract_call(
@@ -107,7 +107,7 @@ where
                     &res.state,
                 );
             }
-            evm.db_mut().commit_multi(res.state);
+            evm.db_mut().commit(res.state);
         }
 
         Ok(())
@@ -117,7 +117,7 @@ where
     pub fn apply_beacon_root_contract_call(
         &mut self,
         parent_beacon_block_root: Option<B256>,
-        evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
+        evm: &mut impl Evm<DB: DatabaseCommit>,
         chain_id: u64,
     ) -> Result<(), BlockExecutionError> {
         let result_and_state = eip4788::transact_beacon_root_contract_call(
@@ -134,7 +134,7 @@ where
                     &res.state,
                 );
             }
-            evm.db_mut().commit_multi(res.state);
+            evm.db_mut().commit(res.state);
         }
 
         Ok(())
@@ -143,7 +143,7 @@ where
     /// Applies the post-block call to the EIP-7002 withdrawal request contract.
     pub fn apply_withdrawal_requests_contract_call(
         &mut self,
-        evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
+        evm: &mut impl Evm<DB: DatabaseCommit>,
     ) -> Result<Bytes, BlockExecutionError> {
         let result_and_state = eip7002::transact_withdrawal_requests_contract_call(evm)?;
 
@@ -155,7 +155,7 @@ where
                 &result_and_state.state,
             );
         }
-        evm.db_mut().commit_multi(result_and_state.state);
+        evm.db_mut().commit(result_and_state.state);
 
         eip7002::post_commit(result_and_state.result)
     }
@@ -163,7 +163,7 @@ where
     /// Applies the post-block call to the EIP-7251 consolidation requests contract.
     pub fn apply_consolidation_requests_contract_call(
         &mut self,
-        evm: &mut impl Evm<DB: MultiChainDatabaseCommit>,
+        evm: &mut impl Evm<DB: DatabaseCommit>,
     ) -> Result<Bytes, BlockExecutionError> {
         let result_and_state = eip7251::transact_consolidation_requests_contract_call(evm)?;
 
@@ -175,7 +175,7 @@ where
                 &result_and_state.state,
             );
         }
-        evm.db_mut().commit_multi(result_and_state.state);
+        evm.db_mut().commit(result_and_state.state);
 
         eip7251::post_commit(result_and_state.result)
     }

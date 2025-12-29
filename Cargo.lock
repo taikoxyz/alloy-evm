@@ -141,6 +141,7 @@ dependencies = [
  "alloy-sol-types",
  "auto_impl",
  "derive_more",
+ "gwyneth-types",
  "op-alloy-consensus",
  "revm",
  "serde_json",
@@ -2262,8 +2263,6 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 name = "revm"
 version = "29.0.0"
 dependencies = [
- "alloy-sol-macro",
- "alloy-sol-types",
  "revm-bytecode",
  "revm-context",
  "revm-context-interface",
@@ -2275,7 +2274,6 @@ dependencies = [
  "revm-precompile",
  "revm-primitives",
  "revm-state",
- "serde_json",
 ]
 
 [[package]]
@@ -2297,7 +2295,6 @@ dependencies = [
  "derive-where",
  "revm-bytecode",
  "revm-context-interface",
- "revm-database",
  "revm-database-interface",
  "revm-primitives",
  "revm-state",
@@ -2312,7 +2309,6 @@ dependencies = [
  "alloy-eip7702",
  "auto_impl",
  "either",
- "revm-bytecode",
  "revm-database-interface",
  "revm-primitives",
  "revm-state",
@@ -2351,7 +2347,6 @@ dependencies = [
  "revm-bytecode",
  "revm-context",
  "revm-context-interface",
- "revm-database",
  "revm-database-interface",
  "revm-interpreter",
  "revm-precompile",
@@ -2367,7 +2362,6 @@ dependencies = [
  "auto_impl",
  "either",
  "revm-context",
- "revm-context-interface",
  "revm-database-interface",
  "revm-handler",
  "revm-interpreter",
@@ -2415,7 +2409,6 @@ name = "revm-primitives"
 version = "20.2.1"
 dependencies = [
  "alloy-primitives",
- "alloy-sol-types",
  "num_enum",
  "once_cell",
  "serde",
@@ -3357,8 +3350,6 @@ checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
 [[package]]
 name = "winnow"
 version = "0.7.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21a0236b59786fed61e2a80582dd500fe61f18b5dca67a4a067d0bc9039339cf"
 dependencies = [
  "memchr",
 ]

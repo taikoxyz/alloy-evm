@@ -2,8 +2,8 @@ use alloy_evm::{eth::EthEvmFactory, Evm, EvmEnv, EvmFactory};
 use alloy_primitives::{address, Address, U256};
 use revm::{
     context::{BlockEnv, CfgEnv, TxEnv},
-    database::{EmptyDB, MultiEmptyDB},
-    primitives::{hardfork::SpecId, ChainAddress, HashMap, MultiChainTxKind as TxKind},
+    database::EmptyDB,
+    primitives::{hardfork::SpecId, HashMap, TxKind},
 };
 
 #[test]
@@ -16,8 +16,7 @@ fn test_multichain_support() {
     // Create block environment for the chain
     let mut block = BlockEnv::default();
     block.number = U256::from(1000);
-    block.beneficiary =
-        ChainAddress::new(1, address!("0x0000000000000000000000000000000000000001"));
+    block.beneficiary = address!("0x0000000000000000000000000000000000000001");
 
     let mut block_env = HashMap::default();
     block_env.insert(0, BlockEnv::default()); // Add fallback block
@@ -25,10 +24,7 @@ fn test_multichain_support() {
 
     let env = EvmEnv { block_env, cfg_env };
     let factory = EthEvmFactory::default();
-    let mut multi_db = MultiEmptyDB::new();
-    multi_db.add_chain(0, EmptyDB::default()); // Add fallback chain
-    multi_db.add_chain(1, EmptyDB::default());
-    let mut evm = factory.create_evm(multi_db, env);
+    let mut evm = factory.create_evm(EmptyDB::default(), env);
 
     // Test 2: Verify chain ID handling
     assert_eq!(evm.chain_id(), 1);
@@ -36,16 +32,12 @@ fn test_multichain_support() {
     // Test 3: Verify block access
     let block = evm.block();
     assert_eq!(block.number, U256::from(1000));
-    assert_eq!(block.beneficiary.0, 1); // chain_id
-    assert_eq!(block.beneficiary.1, address!("0x0000000000000000000000000000000000000001"));
+    assert_eq!(block.beneficiary, address!("0x0000000000000000000000000000000000000001"));
 
-    // Test 4: Create transaction with ChainAddress
+    // Test 4: Create a basic transaction environment.
     let tx = TxEnv {
-        caller: ChainAddress::new(1, address!("0x1111111111111111111111111111111111111111")),
-        kind: TxKind::Call(ChainAddress::new(
-            1,
-            address!("0x2222222222222222222222222222222222222222"),
-        )),
+        caller: address!("0x1111111111111111111111111111111111111111"),
+        kind: TxKind::Call(address!("0x2222222222222222222222222222222222222222")),
         gas_limit: 21000,
         gas_price: 1000000000,
         value: U256::ZERO,
@@ -55,20 +47,18 @@ fn test_multichain_support() {
         ..Default::default()
     };
 
-    assert_eq!(tx.caller.0, 1);
-    assert_eq!(tx.caller.1, address!("0x1111111111111111111111111111111111111111"));
+    assert_eq!(tx.caller, address!("0x1111111111111111111111111111111111111111"));
 
     if let TxKind::Call(to) = tx.kind {
-        assert_eq!(to.0, 1);
-        assert_eq!(to.1, address!("0x2222222222222222222222222222222222222222"));
+        assert_eq!(to, address!("0x2222222222222222222222222222222222222222"));
     } else {
         panic!("Expected Call variant");
     }
 
     // Test 5: System call with automatic chain ID
     let result = evm.transact_system_call(
-        ChainAddress::new(1, address!("0x3333333333333333333333333333333333333333")),
-        ChainAddress::new(1, address!("0x4444444444444444444444444444444444444444")),
+        address!("0x3333333333333333333333333333333333333333"),
+        address!("0x4444444444444444444444444444444444444444"),
         Default::default(),
     );
 
@@ -92,17 +82,14 @@ fn test_basic_evm_creation() {
 
     let mut block = BlockEnv::default();
     block.number = U256::from(5000);
-    block.beneficiary =
-        ChainAddress::new(999, address!("0x0000000000000000000000000000000000000000"));
+    block.beneficiary = address!("0x0000000000000000000000000000000000000000");
 
     let mut block_env = HashMap::default();
     block_env.insert(999, block);
 
     let env = EvmEnv { block_env, cfg_env };
     let factory = EthEvmFactory::default();
-    let mut multi_db = MultiEmptyDB::new();
-    multi_db.add_chain(999, EmptyDB::default());
-    let evm = factory.create_evm(multi_db, env);
+    let evm = factory.create_evm(EmptyDB::default(), env);
 
     // Verify block is set correctly
     let block = evm.block();
@@ -120,16 +107,14 @@ fn test_different_chain_configs() {
 
         let mut block = BlockEnv::default();
         block.number = U256::from(1000 * chain_id);
-        block.beneficiary = ChainAddress::new(chain_id, Address::from([chain_id as u8; 20]));
+        block.beneficiary = Address::from([chain_id as u8; 20]);
 
         let mut block_env = HashMap::default();
         block_env.insert(chain_id, block);
 
         let env = EvmEnv { block_env, cfg_env: cfg_env.clone() };
         let factory = EthEvmFactory::default();
-        let mut multi_db = MultiEmptyDB::new();
-        multi_db.add_chain(chain_id, EmptyDB::default());
-        let evm = factory.create_evm(multi_db, env);
+        let evm = factory.create_evm(EmptyDB::default(), env);
 
         assert_eq!(evm.chain_id(), chain_id);
         assert_eq!(evm.block().number, 1000 * chain_id);

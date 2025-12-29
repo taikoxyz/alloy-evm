@@ -5,11 +5,12 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip7685::Requests;
+use gwyneth_types::GwynethJournal;
 use revm::{
     context::result::ExecutionResult,
     database::State,
     inspector::NoOpInspector,
-    primitives::{GwynethJournal, HashMap},
+    primitives::HashMap,
     Inspector,
 };
 
@@ -27,7 +28,7 @@ pub mod state_changes;
 pub mod calc;
 
 /// The result of executing a block.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct BlockExecutionResult<T> {
     /// All the receipts of the transactions in the block.
     pub receipts: Vec<T>,

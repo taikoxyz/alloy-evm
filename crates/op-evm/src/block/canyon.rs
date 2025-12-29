@@ -3,8 +3,8 @@ use alloy_op_hardforks::OpHardforks;
 use alloy_primitives::{address, b256, hex, Address, Bytes, B256};
 use revm::{
     database::State,
-    database_interface::MultiChainDatabaseCommit,
-    primitives::{ChainAddress, HashMap},
+    database_interface::DatabaseCommit,
+    primitives::HashMap,
     state::Bytecode,
 };
 
@@ -25,7 +25,7 @@ pub(crate) fn ensure_create2_deployer<DB>(
     chain_spec: impl OpHardforks,
     timestamp: u64,
     db: &mut State<DB>,
-    chain_id: u64,
+    _chain_id: u64,
 ) -> Result<(), DB::Error>
 where
     DB: MultiDatabase,
@@ -37,8 +37,7 @@ where
         && !chain_spec.is_canyon_active_at_timestamp(timestamp.saturating_sub(2))
     {
         // Load the create2 deployer account from the cache.
-        let chain_addr = ChainAddress::new(chain_id, CREATE_2_DEPLOYER_ADDR);
-        let acc = db.load_cache_account(chain_addr)?;
+        let acc = db.load_cache_account(CREATE_2_DEPLOYER_ADDR)?;
 
         // Update the account info with the create2 deployer codehash and bytecode.
         let mut acc_info = acc.account_info().unwrap_or_default();
@@ -50,7 +49,7 @@ where
         revm_acc.mark_touch();
 
         // Commit the create2 deployer account to the database.
-        db.commit_multi(HashMap::from_iter([(chain_addr, revm_acc)]));
+        db.commit(HashMap::from_iter([(CREATE_2_DEPLOYER_ADDR, revm_acc)]));
         return Ok(());
     }
 

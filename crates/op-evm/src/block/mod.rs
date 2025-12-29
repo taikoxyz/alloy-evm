@@ -25,8 +25,8 @@ use receipt_builder::OpReceiptBuilder;
 use revm::{
     context::result::{ExecutionResult, ResultAndState},
     database::State,
-    database_interface::MultiChainDatabaseCommit,
-    primitives::{ChainAddress, HashMap},
+    database_interface::DatabaseCommit,
+    primitives::HashMap,
     Inspector,
 };
 
@@ -161,10 +161,9 @@ where
         // nonces, so we don't need to touch the DB for those.
         let depositor = (self.is_regolith && is_deposit)
             .then(|| {
-                let chain_id = self.evm.chain_id();
                 self.evm
                     .db_mut()
-                    .load_cache_account(ChainAddress::new(chain_id, *tx.signer()))
+                    .load_cache_account(*tx.signer())
                     .map(|acc| acc.account_info().unwrap_or_default())
             })
             .transpose()
@@ -223,7 +222,7 @@ where
             },
         );
 
-        self.evm.db_mut().commit_multi(state);
+        self.evm.commit_state(state);
 
         Ok(Some(gas_used))
     }
@@ -240,11 +239,10 @@ where
             .increment_balances(
                 balance_increments
                     .iter()
-                    .map(|(addr, balance)| (ChainAddress::new(chain_id, *addr), *balance)),
+                    .map(|(addr, balance)| (*addr, *balance)),
             )
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
         // call state hook with changes due to balance increments.
-        let chain_id = self.evm.chain_id();
         self.system_caller.try_on_state_with(|| {
             balance_increment_state(&balance_increments, self.evm.db_mut(), chain_id).map(|state| {
                 (

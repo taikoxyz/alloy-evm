@@ -4,7 +4,7 @@ use crate::{Evm, IntoTxEnv};
 use core::{fmt::Debug, iter::Peekable};
 use revm::{
     context::result::{ExecutionResult, ResultAndState},
-    database_interface::MultiChainDatabaseCommit,
+    database_interface::DatabaseCommit,
     state::EvmState,
 };
 
@@ -42,7 +42,7 @@ impl<'a, T, E: Evm<Inspector: Clone>> TracingCtx<'a, T, E> {
     }
 }
 
-impl<E: Evm<Inspector: Clone, DB: MultiChainDatabaseCommit>> TxTracer<E> {
+impl<E: Evm<Inspector: Clone, DB: DatabaseCommit>> TxTracer<E> {
     /// Creates a new [`TxTracer`] instance.
     pub fn new(mut evm: E) -> Self {
         Self { fused_inspector: evm.inspector_mut().clone(), evm }
@@ -139,7 +139,7 @@ impl<E: Evm, Txs: Iterator, F> TracerIter<'_, E, Txs, F> {
 
 impl<E, T, Txs, F, O, Err> Iterator for TracerIter<'_, E, Txs, F>
 where
-    E: Evm<DB: MultiChainDatabaseCommit, Inspector: Clone>,
+    E: Evm<DB: DatabaseCommit, Inspector: Clone>,
     T: IntoTxEnv<E::Tx> + Clone,
     Txs: Iterator<Item = T>,
     Err: From<E::Error>,
@@ -171,7 +171,7 @@ where
         // Only commit next transaction if `skip_last_commit` is disabled or there is a next
         // transaction.
         if !self.skip_last_commit || self.txs.peek().is_some() {
-            db.commit_multi(state);
+            db.commit(state);
         }
 
         if self.fuse && !was_fused {

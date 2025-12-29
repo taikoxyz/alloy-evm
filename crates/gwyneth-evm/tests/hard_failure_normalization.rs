@@ -1,12 +1,13 @@
+//! Hard-failure normalization contract tests for `alloy-gwyneth-evm`.
+
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl, GwynethHaltReason};
 use gwyneth_engine::L2OverlayDb;
-use gwyneth_types::EXTENSION_ORACLE;
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
     context_interface::result::ExecutionResult,
-    primitives::{Address, Bytes, ChainAddress, HashMap, MultiChainTxKind, U256},
+    primitives::{Address, Bytes, HashMap, TxKind, U256},
     state::{AccountInfo, Bytecode},
 };
 
@@ -89,14 +90,9 @@ fn base_env() -> (HashMap<u64, BlockEnv>, CfgEnv) {
     let mut cfg_env = CfgEnv::default();
     cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
     cfg_env.chain_id = 1;
-    cfg_env.xchain = true;
-    cfg_env.allow_mocking = true;
-    cfg_env.parent_chain_id = Some(1);
-    cfg_env.extension_oracle = Some(EXTENSION_ORACLE);
-    cfg_env.gwyneth = Some(Address::from([0x33; 20]));
 
     let mut block_env = BlockEnv::default();
-    block_env.beneficiary = ChainAddress::new(1, Address::ZERO);
+    block_env.beneficiary = Address::ZERO;
     block_env.gas_limit = 30_000_000;
 
     let mut blocks: HashMap<u64, BlockEnv> = HashMap::default();
@@ -123,7 +119,7 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
         code_structural_violation(xcalloptions_word(2, target, false), bad_to),
     );
 
-    let mut db = L2OverlayDb::new(l1);
+    let mut db = L2OverlayDb::new(1, l1);
     db.add_l2_overlay(2, l2);
 
     let (blocks, cfg_env) = base_env();
@@ -133,8 +129,8 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
 
     let tx = TxEnv::builder()
         .chain_id(Some(1))
-        .caller(ChainAddress::new(1, caller))
-        .kind(MultiChainTxKind::Call(ChainAddress::new(1, entry)))
+        .caller(caller)
+        .kind(TxKind::Call(entry))
         .gas_limit(123_456)
         .gas_price(0)
         .value(U256::ZERO)
@@ -150,9 +146,8 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     assert!(out.result.output().is_none());
 
     match out.result {
-        ExecutionResult::Halt { reason, gas_used, gas_used_per_chain, .. } => {
+        ExecutionResult::Halt { reason, gas_used } => {
             assert_eq!(gas_used, 123_456);
-            assert_eq!(gas_used_per_chain.get(&1).copied(), Some(123_456));
 
             match reason {
                 GwynethHaltReason::GwynethHardFailure(hf) => {
@@ -190,7 +185,7 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
         code_structural_violation(xcalloptions_word(2, target, false), bad_to),
     );
 
-    let mut db = L2OverlayDb::new(l1);
+    let mut db = L2OverlayDb::new(1, l1);
     db.add_l2_overlay(2, l2);
 
     let (blocks, cfg_env) = base_env();
@@ -203,8 +198,8 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
 
     let out = evm
         .transact_system_call(
-            ChainAddress::new(1, caller),
-            ChainAddress::new(1, entry),
+            caller,
+            entry,
             Bytes::new(),
         )
         .expect("hard failure is normalized");
@@ -215,9 +210,8 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     assert!(out.result.output().is_none());
 
     match out.result {
-        ExecutionResult::Halt { reason, gas_used, gas_used_per_chain, .. } => {
+        ExecutionResult::Halt { reason, gas_used } => {
             assert_eq!(gas_used, 30_000_000);
-            assert_eq!(gas_used_per_chain.get(&1).copied(), Some(30_000_000));
 
             match reason {
                 GwynethHaltReason::GwynethHardFailure(hf) => {

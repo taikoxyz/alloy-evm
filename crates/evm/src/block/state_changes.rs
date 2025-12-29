@@ -9,8 +9,7 @@ use alloy_primitives::{map::HashMap, Address};
 use revm::{
     context::BlockEnv,
     database::State,
-    primitives::ChainAddress,
-    state::{Account, AccountStatus, EvmState, WarmTracker},
+    state::{Account, AccountStatus, EvmState},
 };
 
 /// Collect all balance changes at the end of the block.
@@ -46,7 +45,7 @@ where
         }
 
         // Full block reward
-        *balance_increments.entry(block_env.beneficiary.address()).or_default() +=
+        *balance_increments.entry(block_env.beneficiary).or_default() +=
             calc::block_reward(base_block_reward, ommers.len());
     }
 
@@ -117,10 +116,10 @@ pub fn balance_increment_state<DB>(
 where
     DB: MultiDatabase,
 {
+    let _ = chain_id;
     let mut load_account =
-        |address: &Address| -> Result<(ChainAddress, Account), BlockExecutionError> {
-            let chain_address = ChainAddress::new(chain_id, *address);
-            let cache_account = state.load_cache_account(chain_address).map_err(|_| {
+        |address: &Address| -> Result<(Address, Account), BlockExecutionError> {
+            let cache_account = state.load_cache_account(*address).map_err(|_| {
                 BlockExecutionError::msg("could not load account for balance increment")
             })?;
 
@@ -129,13 +128,12 @@ where
             })?;
 
             Ok((
-                chain_address,
+                *address,
                 Account {
                     info: account.info.clone(),
                     storage: Default::default(),
                     status: AccountStatus::Touched,
                     transaction_id: 0,
-                    warm_tracker: WarmTracker::default(),
                 },
             ))
         };
