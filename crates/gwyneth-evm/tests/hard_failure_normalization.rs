@@ -2,7 +2,7 @@
 
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl, GwynethHaltReason};
-use gwyneth_engine::L2OverlayDb;
+use gwyneth_engine::{HardFailureCode, L2OverlayDb};
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
@@ -154,8 +154,12 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
                     assert_eq!(hf.chain_id, 1);
                     assert_eq!(hf.opcode, Some(revm::state::bytecode::opcode::CALL));
                     assert_eq!(
+                        hf.code,
+                        HardFailureCode::XcalloptionsMustBeFollowedByCallToExtensionOracle
+                    );
+                    assert_eq!(
                         hf.reason,
-                        "xcalloptions must be followed by CALL to extension oracle"
+                        HardFailureCode::XcalloptionsMustBeFollowedByCallToExtensionOracle.reason()
                     );
                     assert_eq!(hf.gas_used, 123_456);
                     assert!(hf.logs.is_empty());
@@ -218,8 +222,12 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
                     assert_eq!(hf.chain_id, 1);
                     assert_eq!(hf.opcode, Some(revm::state::bytecode::opcode::CALL));
                     assert_eq!(
+                        hf.code,
+                        HardFailureCode::XcalloptionsMustBeFollowedByCallToExtensionOracle
+                    );
+                    assert_eq!(
                         hf.reason,
-                        "xcalloptions must be followed by CALL to extension oracle"
+                        HardFailureCode::XcalloptionsMustBeFollowedByCallToExtensionOracle.reason()
                     );
                     assert_eq!(hf.gas_used, 30_000_000);
                     assert!(hf.logs.is_empty());

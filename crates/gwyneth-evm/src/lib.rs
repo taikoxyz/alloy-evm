@@ -286,14 +286,7 @@ where
         let mut hard_failure: Option<GwynethHardFailure> = None;
         if let Some(details) = self.inner.inspector.take_hard_failure_details() {
             let gas_used = self.inner.ctx.tx().gas_limit;
-            hard_failure = Some(GwynethHardFailure {
-                chain_id: details.chain_id,
-                opcode: details.opcode,
-                reason: details.reason,
-                gas_used,
-                logs: alloc::vec::Vec::new(),
-                output: Bytes::new(),
-            });
+            hard_failure = Some(GwynethHardFailure::from_details(details, gas_used));
 
             // Rewrite the internal `FatalExternalError` into a standard Halt.
             use revm::interpreter::InstructionResult;
@@ -459,14 +452,7 @@ where
         let mut hard_failure: Option<GwynethHardFailure> = None;
         if let Some(details) = self.inner.inspector.take_hard_failure_details() {
             let gas_used = self.inner.ctx.tx().gas_limit;
-            hard_failure = Some(GwynethHardFailure {
-                chain_id: details.chain_id,
-                opcode: details.opcode,
-                reason: details.reason,
-                gas_used,
-                logs: alloc::vec::Vec::new(),
-                output: Bytes::new(),
-            });
+            hard_failure = Some(GwynethHardFailure::from_details(details, gas_used));
 
             use revm::interpreter::InstructionResult;
             match &mut frame_result {
