@@ -21,15 +21,14 @@ pub use halt_reason::GwynethHaltReason;
 pub use inspector::GwynethInspector;
 
 use alloc::string::String;
-use alloy_evm::{Evm, EvmEnv, MultiDatabase};
+use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
 use gwyneth_types::ChainState;
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
     GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure,
-    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingContextExt,
-    TrackingJournal,
+    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -41,7 +40,7 @@ use revm::{
     handler::{instructions::EthInstructions, EthFrame, Handler},
     inspector::{Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
-    primitives::{hardfork::SpecId, HashMap},
+    primitives::hardfork::SpecId,
 };
 
 type InnerContext<DB> = GwynethContext<Context<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>>;
@@ -57,12 +56,11 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 /// Gwyneth-flavoured EVM implementation that wraps the REVM context backed by the
 /// Gwyneth tracking journal and precompile set.
 #[allow(missing_debug_implementations)]
-pub struct GwynethEvm<DB: MultiDatabase + gwyneth_types::ChainSwitchable, I> {
+pub struct GwynethEvm<DB: Database + gwyneth_types::ChainSwitchable, I> {
     inner: InnerEvm<DB, I>,
-    blocks: HashMap<u64, BlockEnv>,
 }
 
-impl<DB: MultiDatabase + gwyneth_types::ChainSwitchable, I> GwynethEvm<DB, I>
+impl<DB: Database + gwyneth_types::ChainSwitchable, I> GwynethEvm<DB, I>
 where
     I: Inspector<InnerContext<DB>>,
 {
@@ -83,17 +81,10 @@ where
         inspect: bool,
     ) -> Self {
         let EvmEnv { block_env, cfg_env } = env;
-        let chain_id = cfg_env.chain_id;
-        let blocks = block_env;
-        let block = blocks
-            .get(&chain_id)
-            .or_else(|| blocks.get(&0))
-            .cloned()
-            .unwrap_or_default();
 
         let ctx = Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec)
             .with_cfg(cfg_env)
-            .with_block(block);
+            .with_block(block_env);
         let gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
         let inspector = GwynethInspector::new(inspector, inspect);
         let inner = InnerEvm {
@@ -103,7 +94,7 @@ where
             precompiles: GwynethPrecompileProvider::default(),
             frame_stack: Default::default(),
         };
-        Self { inner, blocks }
+        Self { inner }
     }
 
     fn ctx(&self) -> &InnerContext<DB> {
@@ -209,10 +200,7 @@ where
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
 where
-    DB: MultiDatabase
-        + gwyneth_types::ChainSwitchable
-        + gwyneth_types::ParentLoadCheckpoints
-        + revm::Database,
+    DB: Database + gwyneth_types::ChainSwitchable + gwyneth_types::ParentLoadCheckpoints,
     I: Inspector<InnerContext<DB>>,
 {
     type DB = DB;
@@ -223,8 +211,8 @@ where
     type Precompiles = GwynethPrecompileProvider;
     type Inspector = GwynethInspector<I>;
 
-    fn blocks(&self) -> &revm::primitives::HashMap<u64, BlockEnv> {
-        &self.blocks
+    fn block(&self) -> &BlockEnv {
+        &self.ctx().base.block
     }
 
     fn chain_id(&self) -> u64 {
@@ -347,60 +335,6 @@ where
         Ok(ResultAndState::new(exec_result, state))
     }
 
-    fn commit_state(&mut self, state: revm::state::EvmState)
-    where
-        Self::DB: revm::database_interface::DatabaseCommit,
-    {
-        let origin = self.inner.ctx.capture_chain_state();
-
-        self.db_mut().commit(state);
-
-        let mut pending = self
-            .inner
-            .ctx
-            .tracking_journal_mut()
-            .take_pending_commit_state();
-
-        #[cfg(feature = "std")]
-        if std::env::var_os("GWYNETH_DEBUG_MULTI_COMMIT").is_some() {
-            let mut pending_chains: alloc::vec::Vec<u64> = pending.keys().copied().collect();
-            pending_chains.sort_unstable();
-            eprintln!(
-                "[alloy-gwyneth-evm][commit_state] origin_chain={} pending_chains={:?}",
-                origin.db_chain_id, pending_chains
-            );
-        }
-
-        for (chain_id, changes) in pending.drain() {
-            if changes.is_empty() {
-                continue;
-            }
-
-            #[cfg(feature = "std")]
-            if std::env::var_os("GWYNETH_DEBUG_MULTI_COMMIT").is_some() {
-                eprintln!(
-                    "[alloy-gwyneth-evm][commit_state] committing chain={} accounts={}",
-                    chain_id,
-                    changes.len()
-                );
-            }
-
-            if self
-                .inner
-                .ctx
-                .apply_chain_state(ChainState::new(chain_id, chain_id, origin.execution_mode))
-                .is_ok()
-            {
-                self.db_mut().commit(changes);
-            } else {
-                debug_assert!(false, "commit_state: missing overlay for chain {}", chain_id);
-            }
-        }
-
-        // Restore full chain state for subsequent calls.
-        let _ = self.inner.ctx.apply_chain_state(origin);
-    }
-
     fn transact_system_call(
         &mut self,
         caller: revm::primitives::Address,
@@ -500,13 +434,12 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let Self { inner, mut blocks } = self;
+        let Self { inner } = self;
         let InnerEvm { ctx, .. } = inner;
         let GwynethContext { base, .. } = ctx;
         let Context { block, cfg, journaled_state, .. } = base;
         let db = journaled_state.into_db();
-        blocks.insert(cfg.chain_id, block);
-        (db, EvmEnv { block_env: blocks, cfg_env: cfg })
+        (db, EvmEnv { block_env: block, cfg_env: cfg })
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
@@ -545,12 +478,9 @@ where
         let mut overlay = L2OverlayDb::new(gwyneth_types::L1_CHAIN_ID, l1_db);
         overlay.add_l2_overlay(chain_id, l2_db);
         let _ = overlay.switch_to_chain(chain_id);
-        let mut blocks = revm::primitives::HashMap::default();
-        blocks.insert(cfg_env.chain_id, block_env.clone());
-        blocks.insert(0, block_env);
         Self::from_env(
             overlay,
-            EvmEnv { block_env: blocks, cfg_env },
+            EvmEnv { block_env, cfg_env },
             inspector,
             DetectorConfig::default(),
             true,

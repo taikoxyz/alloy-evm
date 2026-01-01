@@ -3,16 +3,16 @@
 use alloy_primitives::U256;
 use revm::{
     context::{BlockEnv, CfgEnv},
-    primitives::{hardfork::SpecId, HashMap},
+    primitives::hardfork::SpecId,
 };
 
 /// Container type that holds both the configuration and block environment for EVM execution.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EvmEnv<Spec = SpecId> {
     /// The configuration environment with handler settings
     pub cfg_env: CfgEnv<Spec>,
     /// The block environment containing block-specific data
-    pub block_env: HashMap<u64, BlockEnv>,
+    pub block_env: BlockEnv,
 }
 
 impl<Spec> EvmEnv<Spec> {
@@ -22,12 +22,12 @@ impl<Spec> EvmEnv<Spec> {
     ///
     /// * `cfg_env_with_handler_cfg` - The configuration environment with handler settings
     /// * `block` - The block environment containing block-specific data
-    pub const fn new(cfg_env: CfgEnv<Spec>, block_env: HashMap<u64, BlockEnv>) -> Self {
+    pub const fn new(cfg_env: CfgEnv<Spec>, block_env: BlockEnv) -> Self {
         Self { cfg_env, block_env }
     }
 
     /// Returns a reference to the block environment.
-    pub const fn block_env(&self) -> &HashMap<u64, BlockEnv> {
+    pub const fn block_env(&self) -> &BlockEnv {
         &self.block_env
     }
 
@@ -46,12 +46,9 @@ impl<Spec> EvmEnv<Spec> {
         &self.cfg_env.spec
     }
 
-    /// Overrides the configured block number for the default chain
+    /// Overrides the configured block number
     pub fn with_block_number(mut self, number: U256) -> Self {
-        let chain_id = self.cfg_env.chain_id;
-        if let Some(block) = self.block_env.get_mut(&chain_id) {
-            block.number = number;
-        }
+        self.block_env.number = number;
         self
     }
 
@@ -61,10 +58,7 @@ impl<Spec> EvmEnv<Spec> {
     /// This is intended for block overrides.
     pub fn with_block_number_opt(mut self, number: Option<U256>) -> Self {
         if let Some(number) = number {
-            let chain_id = self.cfg_env.chain_id;
-            if let Some(block) = self.block_env.get_mut(&chain_id) {
-                block.number = number;
-            }
+            self.block_env.number = number;
         }
         self
     }
@@ -72,20 +66,14 @@ impl<Spec> EvmEnv<Spec> {
     /// Sets the block number if provided.
     pub fn set_block_number_opt(&mut self, number: Option<U256>) -> &mut Self {
         if let Some(number) = number {
-            let chain_id = self.cfg_env.chain_id;
-            if let Some(block) = self.block_env.get_mut(&chain_id) {
-                block.number = number;
-            }
+            self.block_env.number = number;
         }
         self
     }
 
-    /// Overrides the configured block timestamp for the default chain.
+    /// Overrides the configured block timestamp.
     pub fn with_timestamp(mut self, timestamp: U256) -> Self {
-        let chain_id = self.cfg_env.chain_id;
-        if let Some(block) = self.block_env.get_mut(&chain_id) {
-            block.timestamp = timestamp;
-        }
+        self.block_env.timestamp = timestamp;
         self
     }
 
@@ -95,10 +83,7 @@ impl<Spec> EvmEnv<Spec> {
     /// This is intended for block overrides.
     pub fn with_timestamp_opt(mut self, timestamp: Option<U256>) -> Self {
         if let Some(timestamp) = timestamp {
-            let chain_id = self.cfg_env.chain_id;
-            if let Some(block) = self.block_env.get_mut(&chain_id) {
-                block.timestamp = timestamp;
-            }
+            self.block_env.timestamp = timestamp;
         }
         self
     }
@@ -106,20 +91,14 @@ impl<Spec> EvmEnv<Spec> {
     /// Sets the block timestamp if provided.
     pub fn set_timestamp_opt(&mut self, timestamp: Option<U256>) -> &mut Self {
         if let Some(timestamp) = timestamp {
-            let chain_id = self.cfg_env.chain_id;
-            if let Some(block) = self.block_env.get_mut(&chain_id) {
-                block.timestamp = timestamp;
-            }
+            self.block_env.timestamp = timestamp;
         }
         self
     }
 
-    /// Overrides the configured block base fee for the default chain.
+    /// Overrides the configured block base fee.
     pub fn with_base_fee(mut self, base_fee: u64) -> Self {
-        let chain_id = self.cfg_env.chain_id;
-        if let Some(block) = self.block_env.get_mut(&chain_id) {
-            block.basefee = base_fee;
-        }
+        self.block_env.basefee = base_fee;
         self
     }
 
@@ -129,10 +108,7 @@ impl<Spec> EvmEnv<Spec> {
     /// This is intended for block overrides.
     pub fn with_base_fee_opt(mut self, base_fee: Option<u64>) -> Self {
         if let Some(base_fee) = base_fee {
-            let chain_id = self.cfg_env.chain_id;
-            if let Some(block) = self.block_env.get_mut(&chain_id) {
-                block.basefee = base_fee;
-            }
+            self.block_env.basefee = base_fee;
         }
         self
     }
@@ -140,17 +116,14 @@ impl<Spec> EvmEnv<Spec> {
     /// Sets the block base fee if provided.
     pub fn set_base_fee_opt(&mut self, base_fee: Option<u64>) -> &mut Self {
         if let Some(base_fee) = base_fee {
-            let chain_id = self.cfg_env.chain_id;
-            if let Some(block) = self.block_env.get_mut(&chain_id) {
-                block.basefee = base_fee;
-            }
+            self.block_env.basefee = base_fee;
         }
         self
     }
 }
 
-impl<Spec> From<(CfgEnv<Spec>, HashMap<u64, BlockEnv>)> for EvmEnv<Spec> {
-    fn from((cfg_env, block_env): (CfgEnv<Spec>, HashMap<u64, BlockEnv>)) -> Self {
+impl<Spec> From<(CfgEnv<Spec>, BlockEnv)> for EvmEnv<Spec> {
+    fn from((cfg_env, block_env): (CfgEnv<Spec>, BlockEnv)) -> Self {
         Self { cfg_env, block_env }
     }
 }

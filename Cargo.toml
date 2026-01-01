@@ -54,7 +54,7 @@ op-alloy-consensus = { version = "0.19", default-features = false }
 
 # revm (local checkout; keep in sync with gwyneth-private workspace patches)
 revm = { path = "../revm-private/revm-private/crates/revm", default-features = false }
-# op-revm = { git = "https://github.com/taikoxyz/revm-private", branch = "v75-gwyneth-claude", default-features = false } # Disabled - incompatible with multi-chain architecture
+op-revm = { path = "../revm-private/revm-private/crates/op-revm", default-features = false }
 
 # misc
 auto_impl = "1"

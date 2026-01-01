@@ -24,9 +24,7 @@ pub(crate) fn transact_beacon_root_contract_call<Halt>(
     spec: impl EthereumHardforks,
     parent_beacon_block_root: Option<B256>,
     evm: &mut impl Evm<HaltReason = Halt>,
-    chain_id: u64,
 ) -> Result<Option<ResultAndState<Halt>>, BlockExecutionError> {
-    let _ = chain_id;
     if !spec.is_cancun_active_at_timestamp(evm.block().timestamp.saturating_to()) {
         return Ok(None);
     }

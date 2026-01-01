@@ -13,21 +13,16 @@ use crate::{
         BlockExecutorFor, BlockValidationError, CommitChanges, ExecutableTx, OnStateHook,
         StateChangePostBlockSource, StateChangeSource, SystemCaller,
     },
-    Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded, MultiDatabase,
+    Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
 };
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Log, B256};
-use gwyneth_types::GwynethJournal;
 use revm::{
-    context::result::ExecutionResult,
-    context_interface::result::ResultAndState,
-    database::State,
-    database_interface::DatabaseCommit,
-    primitives::HashMap,
-    Inspector,
+    context::result::ExecutionResult, context_interface::result::ResultAndState, database::State,
+    DatabaseCommit, Inspector,
 };
 
 /// Context for Ethereum block execution.
@@ -50,7 +45,7 @@ pub struct EthBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     spec: Spec,
 
     /// Context for block execution.
-    pub ctx: HashMap<u64, EthBlockExecutionCtx<'a>>,
+    pub ctx: EthBlockExecutionCtx<'a>,
     /// Inner EVM.
     evm: Evm,
     /// Utility to call system smart contracts.
@@ -62,10 +57,6 @@ pub struct EthBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
-    /// State changes from executed transactions.
-    gwyneth_journal: Vec<GwynethJournal>,
-    /// Gas used per chain.
-    gas_used_per_chain: HashMap<u64, u64>,
 }
 
 impl<'a, Evm, Spec, R> EthBlockExecutor<'a, Evm, Spec, R>
@@ -74,19 +65,12 @@ where
     R: ReceiptBuilder,
 {
     /// Creates a new [`EthBlockExecutor`]
-    pub fn new(
-        evm: Evm,
-        ctx: HashMap<u64, EthBlockExecutionCtx<'a>>,
-        spec: Spec,
-        receipt_builder: R,
-    ) -> Self {
+    pub fn new(evm: Evm, ctx: EthBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
         Self {
             evm,
             ctx,
             receipts: Vec::new(),
             gas_used: 0,
-            gwyneth_journal: Vec::new(),
-            gas_used_per_chain: HashMap::default(),
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
@@ -96,7 +80,7 @@ where
 
 impl<'db, DB, E, Spec, R> BlockExecutor for EthBlockExecutor<'_, E, Spec, R>
 where
-    DB: MultiDatabase + 'db,
+    DB: Database + 'db,
     E: Evm<
         DB = &'db mut State<DB>,
         Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
@@ -110,28 +94,13 @@ where
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
-        let mut state_clear_flag =
+        let state_clear_flag =
             self.spec.is_spurious_dragon_active_at_block(self.evm.block().number.saturating_to());
-        if self.ctx.len() > 1 {
-            state_clear_flag = false;
-        }
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
 
-        //println!("[alloy-evm] apply_pre_execution_changes from ctx");
-
-        for (&chain_id, ctx) in self.ctx.iter() {
-            //println!("[alloy-evm] apply_pre_execution_changes from ctx {} {:?} {:?}", chain_id, ctx.parent_hash, ctx.parent_beacon_block_root);
-            self.system_caller.apply_blockhashes_contract_call(
-                ctx.parent_hash,
-                &mut self.evm,
-                chain_id,
-            )?;
-            self.system_caller.apply_beacon_root_contract_call(
-                ctx.parent_beacon_block_root,
-                &mut self.evm,
-                chain_id,
-            )?;
-        }
+        self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
+        self.system_caller
+            .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
         Ok(())
     }
@@ -163,18 +132,9 @@ where
             return Ok(None);
         }
 
-        if !result.is_success() {
-            #[cfg(feature = "std")]
-            println!("result: {:?}", result);
-        }
-
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
         let gas_used = result.gas_used();
-
-        let chain_id = self.evm.chain_id();
-        *self.gas_used_per_chain.entry(chain_id).or_default() += gas_used;
-        self.gwyneth_journal.push(GwynethJournal::default());
 
         // append gas used
         self.gas_used += gas_used;
@@ -189,7 +149,7 @@ where
         }));
 
         // Commit the state changes.
-        self.evm.commit_state(state);
+        self.evm.db_mut().commit(state);
 
         Ok(Some(gas_used))
     }
@@ -217,12 +177,11 @@ where
             Requests::default()
         };
 
-        let chain_id = self.evm.chain_id();
         let mut balance_increments = post_block_balance_increments(
             &self.spec,
             self.evm.block(),
-            self.ctx.get(&chain_id).unwrap().ommers,
-            self.ctx.get(&chain_id).unwrap().withdrawals.as_deref(),
+            self.ctx.ommers,
+            self.ctx.withdrawals.as_deref(),
         );
 
         // Irregular state change at Ethereum DAO hardfork
@@ -235,11 +194,7 @@ where
             let drained_balance: u128 = self
                 .evm
                 .db_mut()
-                .drain_balances(
-                    dao_fork::DAO_HARDFORK_ACCOUNTS
-                        .iter()
-                        .copied(),
-                )
+                .drain_balances(dao_fork::DAO_HARDFORK_ACCOUNTS)
                 .map_err(|_| BlockValidationError::IncrementBalanceFailed)?
                 .into_iter()
                 .sum();
@@ -251,16 +206,12 @@ where
         // increment balances
         self.evm
             .db_mut()
-            .increment_balances(
-                balance_increments
-                    .iter()
-                    .map(|(addr, balance)| (*addr, *balance)),
-            )
+            .increment_balances(balance_increments.clone())
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
 
         // call state hook with changes due to balance increments.
         self.system_caller.try_on_state_with(|| {
-            balance_increment_state(&balance_increments, self.evm.db_mut(), chain_id).map(|state| {
+            balance_increment_state(&balance_increments, self.evm.db_mut()).map(|state| {
                 (
                     StateChangeSource::PostBlock(StateChangePostBlockSource::BalanceIncrements),
                     Cow::Owned(state),
@@ -270,13 +221,7 @@ where
 
         Ok((
             self.evm,
-            BlockExecutionResult {
-                receipts: self.receipts,
-                requests,
-                gas_used: self.gas_used,
-                gwyneth_journal: self.gwyneth_journal,
-                gas_used_per_chain: self.gas_used_per_chain,
-            },
+            BlockExecutionResult { receipts: self.receipts, requests, gas_used: self.gas_used },
         ))
     }
 
@@ -350,10 +295,10 @@ where
     fn create_executor<'a, DB, I>(
         &'a self,
         evm: EvmF::Evm<&'a mut State<DB>, I>,
-        ctx: HashMap<u64, Self::ExecutionCtx<'a>>,
+        ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: MultiDatabase + 'a,
+        DB: Database + 'a,
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
         EthBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)

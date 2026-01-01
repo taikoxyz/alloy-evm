@@ -6,7 +6,7 @@ use gwyneth_engine::L2OverlayDb;
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
-    primitives::{Address, Bytes, HashMap, TxKind, U256},
+    primitives::{Address, Bytes, TxKind, U256},
     state::AccountInfo,
 };
 
@@ -33,12 +33,8 @@ fn redesign_alloy_smoke() {
     block_env.beneficiary = Address::ZERO;
     block_env.gas_limit = 30_000_000;
 
-    let mut blocks: HashMap<u64, BlockEnv> = HashMap::default();
-    blocks.insert(1, block_env.clone());
-    blocks.insert(0, block_env);
-
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env: blocks, cfg_env });
+    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     let mut tx = TxEnv::default();
     tx.caller = caller;

@@ -27,9 +27,7 @@ pub(crate) fn transact_blockhashes_contract_call<Halt>(
     spec: impl EthereumHardforks,
     parent_block_hash: B256,
     evm: &mut impl Evm<HaltReason = Halt>,
-    chain_id: u64,
 ) -> Result<Option<ResultAndState<Halt>>, BlockExecutionError> {
-    let _ = chain_id;
     if !spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to()) {
         return Ok(None);
     }

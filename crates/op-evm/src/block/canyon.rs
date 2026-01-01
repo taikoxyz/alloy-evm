@@ -1,12 +1,7 @@
-use alloy_evm::MultiDatabase;
+use alloy_evm::Database;
 use alloy_op_hardforks::OpHardforks;
 use alloy_primitives::{address, b256, hex, Address, Bytes, B256};
-use revm::{
-    database::State,
-    database_interface::DatabaseCommit,
-    primitives::HashMap,
-    state::Bytecode,
-};
+use revm::{database::State, primitives::HashMap, state::Bytecode, DatabaseCommit};
 
 /// The address of the create2 deployer
 const CREATE_2_DEPLOYER_ADDR: Address = address!("0x13b0D85CcB8bf860b6b79AF3029fCA081AE9beF2");
@@ -25,10 +20,9 @@ pub(crate) fn ensure_create2_deployer<DB>(
     chain_spec: impl OpHardforks,
     timestamp: u64,
     db: &mut State<DB>,
-    _chain_id: u64,
 ) -> Result<(), DB::Error>
 where
-    DB: MultiDatabase,
+    DB: Database,
 {
     // If the canyon hardfork is active at the current timestamp, and it was not active at the
     // previous block timestamp (heuristically, block time is not perfectly constant at 2s), and the

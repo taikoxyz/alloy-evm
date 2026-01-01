@@ -1,9 +1,6 @@
 use crate::{Evm, EvmEnv};
-use alloy_primitives::Bytes;
-use revm::{
-    context::{either, BlockEnv},
-    primitives::{Address, HashMap},
-};
+use alloy_primitives::{Address, Bytes};
+use revm::context::{either, BlockEnv};
 
 impl<L, R> Evm for either::Either<L, R>
 where
@@ -26,8 +23,8 @@ where
     type Precompiles = L::Precompiles;
     type Inspector = L::Inspector;
 
-    fn blocks(&self) -> &HashMap<u64, BlockEnv> {
-        either::for_both!(self, evm => evm.blocks())
+    fn block(&self) -> &BlockEnv {
+        either::for_both!(self, evm => evm.block())
     }
 
     fn chain_id(&self) -> u64 {
@@ -62,7 +59,7 @@ where
         tx: impl crate::IntoTxEnv<Self::Tx>,
     ) -> Result<revm::context::result::ExecutionResult<Self::HaltReason>, Self::Error>
     where
-        Self::DB: revm::database_interface::DatabaseCommit,
+        Self::DB: revm::DatabaseCommit,
     {
         either::for_both!(self, evm => evm.transact_commit(tx))
     }

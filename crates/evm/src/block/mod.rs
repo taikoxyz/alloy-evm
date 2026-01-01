@@ -1,17 +1,10 @@
 //! Block execution abstraction.
 
-use crate::{
-    Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded, MultiDatabase, RecoveredTx, ToTxEnv,
-};
+use crate::{Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded, RecoveredTx, ToTxEnv};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip7685::Requests;
-use gwyneth_types::GwynethJournal;
 use revm::{
-    context::result::ExecutionResult,
-    database::State,
-    inspector::NoOpInspector,
-    primitives::HashMap,
-    Inspector,
+    context::result::ExecutionResult, database::State, inspector::NoOpInspector, Inspector,
 };
 
 mod error;
@@ -28,7 +21,7 @@ pub mod state_changes;
 pub mod calc;
 
 /// The result of executing a block.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockExecutionResult<T> {
     /// All the receipts of the transactions in the block.
     pub receipts: Vec<T>,
@@ -36,10 +29,6 @@ pub struct BlockExecutionResult<T> {
     pub requests: Requests,
     /// The total gas used by the block.
     pub gas_used: u64,
-    /// The state changes
-    pub gwyneth_journal: Vec<GwynethJournal>,
-    /// The total gas used by the block.
-    pub gas_used_per_chain: HashMap<u64, u64>,
 }
 
 /// Helper trait to encapsulate requirements for a type to be used as input for [`BlockExecutor`].
@@ -290,7 +279,7 @@ where
         Transaction = F::Transaction,
         Receipt = F::Receipt,
     >,
-    DB: MultiDatabase + 'a,
+    DB: Database + 'a,
     I: Inspector<<F::EvmFactory as EvmFactory>::Context<&'a mut State<DB>>> + 'a,
 {
 }
@@ -298,7 +287,7 @@ where
 impl<'a, F, DB, I, T> BlockExecutorFor<'a, F, DB, I> for T
 where
     F: BlockExecutorFactory,
-    DB: MultiDatabase + 'a,
+    DB: Database + 'a,
     I: Inspector<<F::EvmFactory as EvmFactory>::Context<&'a mut State<DB>>> + 'a,
     T: BlockExecutor<
         Evm = <F::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>,
@@ -426,9 +415,9 @@ pub trait BlockExecutorFactory: 'static {
     fn create_executor<'a, DB, I>(
         &'a self,
         evm: <Self::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>,
-        ctx: HashMap<u64, Self::ExecutionCtx<'a>>,
+        ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: MultiDatabase + 'a,
+        DB: Database + 'a,
         I: Inspector<<Self::EvmFactory as EvmFactory>::Context<&'a mut State<DB>>> + 'a;
 }

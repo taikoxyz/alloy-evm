@@ -11,7 +11,7 @@ use alloy_eips::{
 };
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Bytes, B256};
-use revm::{database_interface::DatabaseCommit, primitives::HashMap, state::EvmState};
+use revm::{state::EvmState, DatabaseCommit};
 
 use super::{StateChangePostBlockSource, StateChangePreBlockSource, StateChangeSource};
 
@@ -52,14 +52,11 @@ where
     /// Apply pre execution changes.
     pub fn apply_pre_execution_changes(
         &mut self,
-        headers: HashMap<u64, impl BlockHeader>,
+        header: impl BlockHeader,
         evm: &mut impl Evm<DB: DatabaseCommit>,
     ) -> Result<(), BlockExecutionError> {
-        for (&chain_id, header) in headers.iter() {
-            //println!("[alloy-evm] applying pre execution for {} block {}: {:?} {:?}", chain_id, header.number(), header.parent_hash(), header.parent_beacon_block_root());
-            self.apply_blockhashes_contract_call(header.parent_hash(), evm, chain_id)?;
-            self.apply_beacon_root_contract_call(header.parent_beacon_block_root(), evm, chain_id)?;
-        }
+        self.apply_blockhashes_contract_call(header.parent_hash(), evm)?;
+        self.apply_beacon_root_contract_call(header.parent_beacon_block_root(), evm)?;
 
         Ok(())
     }
@@ -91,14 +88,9 @@ where
         &mut self,
         parent_block_hash: B256,
         evm: &mut impl Evm<DB: DatabaseCommit>,
-        chain_id: u64,
     ) -> Result<(), BlockExecutionError> {
-        let result_and_state = eip2935::transact_blockhashes_contract_call(
-            &self.spec,
-            parent_block_hash,
-            evm,
-            chain_id,
-        )?;
+        let result_and_state =
+            eip2935::transact_blockhashes_contract_call(&self.spec, parent_block_hash, evm)?;
 
         if let Some(res) = result_and_state {
             if let Some(hook) = &mut self.hook {
@@ -118,14 +110,9 @@ where
         &mut self,
         parent_beacon_block_root: Option<B256>,
         evm: &mut impl Evm<DB: DatabaseCommit>,
-        chain_id: u64,
     ) -> Result<(), BlockExecutionError> {
-        let result_and_state = eip4788::transact_beacon_root_contract_call(
-            &self.spec,
-            parent_beacon_block_root,
-            evm,
-            chain_id,
-        )?;
+        let result_and_state =
+            eip4788::transact_beacon_root_contract_call(&self.spec, parent_beacon_block_root, evm)?;
 
         if let Some(res) = result_and_state {
             if let Some(hook) = &mut self.hook {

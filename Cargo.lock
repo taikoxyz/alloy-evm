@@ -141,8 +141,8 @@ dependencies = [
  "alloy-sol-types",
  "auto_impl",
  "derive_more",
- "gwyneth-types",
  "op-alloy-consensus",
+ "op-revm",
  "revm",
  "serde_json",
  "thiserror",
@@ -212,6 +212,7 @@ dependencies = [
  "alloy-primitives",
  "auto_impl",
  "op-alloy-consensus",
+ "op-revm",
  "revm",
 ]
 
@@ -1917,6 +1918,15 @@ dependencies = [
  "alloy-rlp",
  "derive_more",
  "thiserror",
+]
+
+[[package]]
+name = "op-revm"
+version = "10.0.0"
+dependencies = [
+ "auto_impl",
+ "revm",
+ "serde",
 ]
 
 [[package]]

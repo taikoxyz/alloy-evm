@@ -1,7 +1,6 @@
 //! State changes that are not related to transactions.
 
 use super::{calc, BlockExecutionError};
-use crate::MultiDatabase;
 use alloy_consensus::BlockHeader;
 use alloy_eips::eip4895::{Withdrawal, Withdrawals};
 use alloy_hardforks::EthereumHardforks;
@@ -10,6 +9,7 @@ use revm::{
     context::BlockEnv,
     database::State,
     state::{Account, AccountStatus, EvmState},
+    Database,
 };
 
 /// Collect all balance changes at the end of the block.
@@ -111,32 +111,29 @@ pub fn insert_post_block_withdrawals_balance_increments(
 pub fn balance_increment_state<DB>(
     balance_increments: &HashMap<Address, u128>,
     state: &mut State<DB>,
-    chain_id: u64,
 ) -> Result<EvmState, BlockExecutionError>
 where
-    DB: MultiDatabase,
+    DB: Database,
 {
-    let _ = chain_id;
-    let mut load_account =
-        |address: &Address| -> Result<(Address, Account), BlockExecutionError> {
-            let cache_account = state.load_cache_account(*address).map_err(|_| {
-                BlockExecutionError::msg("could not load account for balance increment")
-            })?;
+    let mut load_account = |address: &Address| -> Result<(Address, Account), BlockExecutionError> {
+        let cache_account = state.load_cache_account(*address).map_err(|_| {
+            BlockExecutionError::msg("could not load account for balance increment")
+        })?;
 
-            let account = cache_account.account.as_ref().ok_or_else(|| {
-                BlockExecutionError::msg("could not load account for balance increment")
-            })?;
+        let account = cache_account.account.as_ref().ok_or_else(|| {
+            BlockExecutionError::msg("could not load account for balance increment")
+        })?;
 
-            Ok((
-                *address,
-                Account {
-                    info: account.info.clone(),
-                    storage: Default::default(),
-                    status: AccountStatus::Touched,
-                    transaction_id: 0,
-                },
-            ))
-        };
+        Ok((
+            *address,
+            Account {
+                info: account.info.clone(),
+                storage: Default::default(),
+                status: AccountStatus::Touched,
+                transaction_id: 0,
+            },
+        ))
+    };
 
     balance_increments
         .iter()

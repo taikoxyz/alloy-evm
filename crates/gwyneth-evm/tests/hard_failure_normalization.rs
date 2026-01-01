@@ -7,7 +7,7 @@ use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
     context_interface::result::ExecutionResult,
-    primitives::{Address, Bytes, HashMap, TxKind, U256},
+    primitives::{Address, Bytes, TxKind, U256},
     state::{AccountInfo, Bytecode},
 };
 
@@ -86,7 +86,7 @@ fn insert_eoa(db: &mut InMemoryDB, addr: Address) {
     db.insert_account_info(addr, info);
 }
 
-fn base_env() -> (HashMap<u64, BlockEnv>, CfgEnv) {
+fn base_env() -> (BlockEnv, CfgEnv) {
     let mut cfg_env = CfgEnv::default();
     cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
     cfg_env.chain_id = 1;
@@ -94,12 +94,7 @@ fn base_env() -> (HashMap<u64, BlockEnv>, CfgEnv) {
     let mut block_env = BlockEnv::default();
     block_env.beneficiary = Address::ZERO;
     block_env.gas_limit = 30_000_000;
-
-    let mut blocks: HashMap<u64, BlockEnv> = HashMap::default();
-    blocks.insert(1, block_env.clone());
-    blocks.insert(0, block_env);
-
-    (blocks, cfg_env)
+    (block_env, cfg_env)
 }
 
 #[test]
@@ -122,10 +117,10 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     let mut db = L2OverlayDb::new(1, l1);
     db.add_l2_overlay(2, l2);
 
-    let (blocks, cfg_env) = base_env();
+    let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env: blocks, cfg_env });
+    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     let tx = TxEnv::builder()
         .chain_id(Some(1))
@@ -192,10 +187,10 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     let mut db = L2OverlayDb::new(1, l1);
     db.add_l2_overlay(2, l2);
 
-    let (blocks, cfg_env) = base_env();
+    let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env: blocks, cfg_env });
+    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     // Exercise the inspector-enabled path (the gwyneth journal inspector stays active either way).
     evm.set_inspector_enabled(true);
