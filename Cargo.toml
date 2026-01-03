@@ -67,6 +67,5 @@ serde_json = "1"
 #revm = { git = "https://github.com/bluealloy/revm", rev = "11b16259" }
 #op-revm = { git = "https://github.com/bluealloy/revm", rev = "11b16259" }
 
-[patch.crates-io]
-# Match gwyneth-private's v86 toolchain: avoid `keccak256(..as_ref())` inference ambiguity caused by newer `winnow`.
-winnow = { path = "../revm-private/revm-private/vendor/winnow-0.7.13" }
+## NOTE: do not patch `winnow` to a vendored path.
+## Phase 16 removes `vendor/winnow-0.7.13` and uses registry `winnow=0.7.13` like vanilla v86.
