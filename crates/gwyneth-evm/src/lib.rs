@@ -248,6 +248,12 @@ where
             mode_tracking_enabled,
         );
 
+        // Reset per-tx tracking state so cross-chain diffs and forced-warm sets can't leak across
+        // transactions.
+        self.inner
+            .journal_mut()
+            .reset_for_new_tx(start_mode, origin_chain_id);
+
         if self
             .inner
             .ctx
@@ -363,6 +369,12 @@ where
             is_direct,
             mode_tracking_enabled,
         );
+
+        // Reset per-tx tracking state so system-call execution can't leak cross-chain diffs across
+        // blocks.
+        self.inner
+            .journal_mut()
+            .reset_for_new_tx(start_mode, origin_chain_id);
 
         let _ = self
             .inner
