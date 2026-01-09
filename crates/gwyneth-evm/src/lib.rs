@@ -171,6 +171,11 @@ where
         self.inner.ctx.set_parent_chain_id(parent_chain_id);
     }
 
+    /// Override the treasury address used for basefee-burn forwarding (Phase 22.3).
+    pub fn set_treasury_address(&mut self, treasury_address: Option<revm::primitives::Address>) {
+        self.inner.ctx.set_treasury_address(treasury_address);
+    }
+
     /// Enable or disable xchain semantics.
     pub fn set_xchain_enabled(&mut self, enabled: bool) {
         self.inner.ctx.set_xchain_enabled(enabled);
