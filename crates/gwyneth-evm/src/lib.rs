@@ -201,6 +201,46 @@ where
         self.inner.ctx.set_allowed_chain_ids(allowed_chain_ids);
     }
 
+    /// Apply the standard gwyneth EVM configuration bundle for xchain-enforced execution
+    /// (builder/stateless validation).
+    pub fn configure_xchain_enforced(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        treasury_address: Option<revm::primitives::Address>,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.configure_common(parent_chain_id, treasury_address, true, allowed_chain_ids);
+    }
+
+    /// Apply the standard gwyneth EVM configuration bundle for tracking-only execution with
+    /// vanilla EVM semantics (`xchain_enabled=false`, no routing/interception).
+    pub fn configure_tracking_only_vanilla(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        treasury_address: Option<revm::primitives::Address>,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.configure_common(parent_chain_id, treasury_address, false, allowed_chain_ids);
+    }
+
+    fn configure_common(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        treasury_address: Option<revm::primitives::Address>,
+        xchain_enabled: bool,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.set_parent_chain_id(parent_chain_id);
+        self.set_treasury_address(treasury_address);
+        self.set_xchain_enabled(xchain_enabled);
+        self.set_gwyneth_configured(true);
+        self.set_extension_oracle_configured(true);
+
+        let mut allowed_chain_ids: alloc::vec::Vec<u64> = allowed_chain_ids.into_iter().collect();
+        allowed_chain_ids.sort_unstable();
+        self.set_allowed_chain_ids(allowed_chain_ids);
+    }
+
 }
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
