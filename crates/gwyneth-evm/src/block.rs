@@ -13,7 +13,7 @@ use alloy_consensus::Header;
 use alloy_eips::eip4895::Withdrawals;
 use alloy_evm::{eth::EthBlockExecutionCtx, Database, EvmEnv};
 use alloy_primitives::B256;
-use gwyneth_types::ChainSwitchable;
+use gwyneth_types::{ChainSwitchable, ParentChainId};
 use revm::{
     inspector::{Inspector, NoOpInspector},
     primitives::hardfork::SpecId,
@@ -154,7 +154,7 @@ pub trait GwynethBlockExecutorFactoryTrait: 'static {
         ctx: Self::ExecutionCtx<'a>,
     ) -> GwynethBlockExecutor<'a, <Self::EvmFactory as GwynethEvmFactory>::Evm<DB, I>>
     where
-        DB: Database + ChainSwitchable + 'a,
+        DB: Database + ChainSwitchable + ParentChainId + 'a,
         I: Inspector<GwynethEvmContext<DB>> + 'a;
 }
 
@@ -203,7 +203,7 @@ impl<F: GwynethEvmFactory + 'static> GwynethBlockExecutorFactoryTrait
         ctx: Self::ExecutionCtx<'a>,
     ) -> GwynethBlockExecutor<'a, <Self::EvmFactory as GwynethEvmFactory>::Evm<DB, I>>
     where
-        DB: Database + ChainSwitchable + 'a,
+        DB: Database + ChainSwitchable + ParentChainId + 'a,
         I: Inspector<GwynethEvmContext<DB>> + 'a,
     {
         GwynethBlockExecutor::new(evm, ctx)
@@ -213,7 +213,7 @@ impl<F: GwynethEvmFactory + 'static> GwynethBlockExecutorFactoryTrait
 /// Convenience methods for creating Gwyneth EVMs and executors.
 impl<F: GwynethEvmFactory<Spec = SpecId>> GwynethBlockExecutorFactory<F> {
     /// Create an EVM without an inspector.
-    pub fn create_evm<DB: Database + ChainSwitchable>(
+    pub fn create_evm<DB: Database + ChainSwitchable + ParentChainId>(
         &self,
         db: DB,
         env: EvmEnv<SpecId>,
@@ -223,7 +223,7 @@ impl<F: GwynethEvmFactory<Spec = SpecId>> GwynethBlockExecutorFactory<F> {
 
     /// Create an EVM with an inspector.
     pub fn create_evm_with_inspector<
-        DB: Database + ChainSwitchable,
+        DB: Database + ChainSwitchable + ParentChainId,
         I: Inspector<GwynethEvmContext<DB>>,
     >(
         &self,

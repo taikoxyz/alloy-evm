@@ -22,8 +22,10 @@ use alloy_primitives::{Address, Bytes};
 use core::fmt::Debug;
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethContext, GwynethHandler, GwynethPrecompileProvider, L2OverlayDb, TrackingJournal,
+    CfgChainIdSetter, GwynethContext, GwynethContextExt, GwynethHandler, GwynethPrecompileProvider,
+    L2OverlayDb, TrackingContextExt, TrackingJournal,
 };
+use gwyneth_types::{ExecutionMode, ParentChainId};
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
     context_interface::{
@@ -201,7 +203,7 @@ where
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
 where
-    DB: Database + gwyneth_types::ChainSwitchable,
+    DB: Database + gwyneth_types::ChainSwitchable + ParentChainId,
     I: Inspector<InnerContext<DB>>,
 {
     type DB = DB;
@@ -224,6 +226,34 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        let origin_chain_id =
+            tx.chain_id.ok_or_else(|| EVMError::Transaction(InvalidTransaction::MissingChainId))?;
+        let start_mode = match self.inner.ctx.execution_mode() {
+            ExecutionMode::L1Simulated => ExecutionMode::L1Simulated,
+            _ => {
+                let parent_chain_id = self.inner.ctx.db().parent_chain_id();
+                if origin_chain_id == parent_chain_id {
+                    ExecutionMode::L1Direct
+                } else {
+                    ExecutionMode::L2
+                }
+            }
+        };
+
+        // Clear per-tx gwyneth state and align the context to the transaction origin chain.
+        self.inner.ctx.take_pending_chain_switch();
+        self.inner.ctx.take_last_intercepted_switch();
+        self.inner.ctx.set_chain_switch_return_to(None);
+        self.inner.ctx.tracking_journal_mut().reset_for_new_tx(start_mode, origin_chain_id);
+
+        if self.db_mut().switch_to_chain(origin_chain_id).is_err() {
+            return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
+        }
+        self.inner.ctx.set_cfg_chain_id(origin_chain_id);
+        self.inner.ctx.set_tracking_chain_id(origin_chain_id);
+        self.inner.ctx.set_execution_mode(start_mode);
+        self.inner.frame_stack.clear();
+
         self.inner.ctx.set_tx(tx);
         let mut handler = GwynethHandler::<_, Self::Error, EthFrame<EthInterpreter>>::new();
         let exec_result = if self.inspect {
