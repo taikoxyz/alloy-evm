@@ -7,15 +7,10 @@ extern crate alloc;
 #[cfg(not(test))]
 use gwyneth_types as _;
 
-pub mod block;
 pub mod factory;
 pub mod halt_reason;
 pub mod inspector;
 
-pub use block::{
-    GwynethBlockExecutionCtx, GwynethBlockExecutor, GwynethBlockExecutorFactory,
-    GwynethBlockExecutorFactoryTrait,
-};
 pub use factory::{GwynethEvmFactory, GwynethEvmFactoryImpl};
 pub use halt_reason::GwynethHaltReason;
 pub use inspector::GwynethInspector;
@@ -171,6 +166,11 @@ where
         self.inner.ctx.set_parent_chain_id(parent_chain_id);
     }
 
+    /// Override the treasury address used for basefee-burn forwarding (Phase 22.3).
+    pub fn set_treasury_address(&mut self, treasury_address: Option<revm::primitives::Address>) {
+        self.inner.ctx.set_treasury_address(treasury_address);
+    }
+
     /// Enable or disable xchain semantics.
     pub fn set_xchain_enabled(&mut self, enabled: bool) {
         self.inner.ctx.set_xchain_enabled(enabled);
@@ -196,6 +196,164 @@ where
         self.inner.ctx.set_allowed_chain_ids(allowed_chain_ids);
     }
 
+    /// Apply the standard gwyneth EVM configuration bundle for xchain-enforced execution
+    /// (builder/stateless validation).
+    pub fn configure_xchain_enforced(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        treasury_address: Option<revm::primitives::Address>,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.configure_common(parent_chain_id, treasury_address, true, allowed_chain_ids);
+    }
+
+    /// Apply the standard gwyneth EVM configuration bundle for tracking-only execution with
+    /// vanilla EVM semantics (`xchain_enabled=false`, no routing/interception).
+    pub fn configure_tracking_only_vanilla(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        treasury_address: Option<revm::primitives::Address>,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.configure_common(parent_chain_id, treasury_address, false, allowed_chain_ids);
+    }
+
+    fn configure_common(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        treasury_address: Option<revm::primitives::Address>,
+        xchain_enabled: bool,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.set_parent_chain_id(parent_chain_id);
+        self.set_treasury_address(treasury_address);
+        self.set_xchain_enabled(xchain_enabled);
+        self.set_gwyneth_configured(true);
+        self.set_extension_oracle_configured(true);
+
+        let mut allowed_chain_ids: alloc::vec::Vec<u64> = allowed_chain_ids.into_iter().collect();
+        allowed_chain_ids.sort_unstable();
+        self.set_allowed_chain_ids(allowed_chain_ids);
+    }
+
+}
+
+impl<DB, I> GwynethEvm<DB, I>
+where
+    DB: Database + gwyneth_types::ChainSwitchable + gwyneth_types::ParentLoadCheckpoints,
+    I: Inspector<InnerContext<DB>>,
+{
+    fn reset_for_new_tx(
+        &mut self,
+        origin_chain_id: u64,
+        strict_chain_id: bool,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        // Clear cross-transaction Gwyneth state and align the full execution context
+        // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
+        self.inner.ctx.clear_cross_chain_intents();
+        self.inner.ctx.take_cross_chain_route();
+
+        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
+            self.inner.ctx.is_xchain_enabled(),
+            self.inner.ctx.parent_chain_id(),
+            self.inner.ctx.gwyneth_configured(),
+            self.inner.ctx.extension_oracle_configured(),
+        );
+        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
+        let start_mode = gwyneth_types::ExecutionMode::from_context(
+            origin_chain_id,
+            self.inner.ctx.parent_chain_id(),
+            is_direct,
+            mode_tracking_enabled,
+        );
+
+        // Reset per-tx tracking state so cross-chain diffs and forced-warm sets can't leak across
+        // transactions.
+        self.inner
+            .journal_mut()
+            .reset_for_new_tx(start_mode, origin_chain_id);
+
+        let apply_result = self
+            .inner
+            .ctx
+            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode));
+        if strict_chain_id && apply_result.is_err() {
+            return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
+        }
+
+        self.inner.frame_stack.clear();
+
+        // Reset inspector state for the new transaction so hard-failure details can't leak.
+        self.inner.inspector.reset_for_new_tx();
+
+        Ok(())
+    }
+
+    fn take_and_normalize_hard_failure(
+        &mut self,
+        frame_result: &mut revm::handler::FrameResult,
+        gas_used: u64,
+        eip7702_refund: Option<&mut i64>,
+    ) -> Option<GwynethHardFailure> {
+        let details = self.inner.inspector.take_hard_failure_details()?;
+        let trigger_chain_id = details.chain_id;
+        let hard_failure = GwynethHardFailure::from_details(details, gas_used);
+
+        // Rewrite the internal `FatalExternalError` into a standard Halt.
+        use revm::interpreter::InstructionResult;
+        match frame_result {
+            revm::handler::FrameResult::Call(outcome) => {
+                outcome.result.result = InstructionResult::OutOfGas;
+                outcome.result.output = revm::primitives::Bytes::new();
+            }
+            revm::handler::FrameResult::Create(outcome) => {
+                outcome.result.result = InstructionResult::OutOfGas;
+                outcome.result.output = revm::primitives::Bytes::new();
+            }
+        }
+
+        // Clear the forced context error so output can be produced normally.
+        *self.inner.ctx.error() = Ok(());
+
+        // Receipt contract: no refunds for hard failures.
+        if let Some(refund) = eip7702_refund {
+            *refund = 0;
+        }
+
+        // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
+        let mut used = revm::primitives::HashMap::default();
+        used.insert(trigger_chain_id, gas_used);
+        self.inner
+            .ctx
+            .set_per_chain_gas(used, revm::primitives::HashMap::default());
+
+        // Keep the journal's per-chain gas accounting consistent with the normalized surface.
+        // Hard failures consume all gas and attribute it exclusively to the trigger chain.
+        let journal = self.inner.ctx.gwyneth_journal_mut();
+        journal.gas_used_per_chain.clear();
+        journal.gas_used_per_chain.insert(trigger_chain_id, gas_used);
+
+        Some(hard_failure)
+    }
+
+    fn attach_hard_failure_to_execution_result(
+        exec_result: revm::context_interface::result::ExecutionResult<GwynethHaltReason>,
+        hard_failure: Option<GwynethHardFailure>,
+    ) -> revm::context_interface::result::ExecutionResult<GwynethHaltReason> {
+        let Some(hf) = hard_failure else {
+            return exec_result;
+        };
+
+        match exec_result {
+            revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } => {
+                revm::context_interface::result::ExecutionResult::Halt {
+                    reason: GwynethHaltReason::GwynethHardFailure(hf),
+                    gas_used,
+                }
+            }
+            other => other,
+        }
+    }
 }
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
@@ -229,43 +387,7 @@ where
         }
         let origin_chain_id = tx.chain_id.unwrap_or(self.chain_id());
 
-        // Clear cross-transaction Gwyneth state and align the full execution context
-        // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
-        self.inner.ctx.take_cross_chain_intent();
-        self.inner.ctx.take_cross_chain_route();
-
-        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            self.inner.ctx.is_xchain_enabled(),
-            self.inner.ctx.parent_chain_id(),
-            self.inner.ctx.gwyneth_configured(),
-            self.inner.ctx.extension_oracle_configured(),
-        );
-        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
-        let start_mode = gwyneth_types::ExecutionMode::from_context(
-            origin_chain_id,
-            self.inner.ctx.parent_chain_id(),
-            is_direct,
-            mode_tracking_enabled,
-        );
-
-        // Reset per-tx tracking state so cross-chain diffs and forced-warm sets can't leak across
-        // transactions.
-        self.inner
-            .journal_mut()
-            .reset_for_new_tx(start_mode, origin_chain_id);
-
-        if self
-            .inner
-            .ctx
-            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode))
-            .is_err()
-        {
-            return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
-        }
-        self.inner.frame_stack.clear();
-
-        // Reset inspector state for the new transaction so hard-failure details can't leak.
-        self.inner.inspector.reset_for_new_tx();
+        self.reset_for_new_tx(origin_chain_id, true)?;
 
         self.inner.ctx.set_tx(tx);
 
@@ -278,43 +400,11 @@ where
         let mut eip7702_refund = handler.pre_execution(&mut self.inner)? as i64;
         let mut frame_result = handler.inspect_execution(&mut self.inner, &init_and_floor_gas)?;
 
-        let mut hard_failure: Option<GwynethHardFailure> = None;
-        if let Some(details) = self.inner.inspector.take_hard_failure_details() {
-            let gas_used = self.inner.ctx.tx().gas_limit;
-            hard_failure = Some(GwynethHardFailure::from_details(details, gas_used));
-
-            // Rewrite the internal `FatalExternalError` into a standard Halt.
-            use revm::interpreter::InstructionResult;
-            match &mut frame_result {
-                revm::handler::FrameResult::Call(outcome) => {
-                    outcome.result.result = InstructionResult::OutOfGas;
-                    outcome.result.output = revm::primitives::Bytes::new();
-                }
-                revm::handler::FrameResult::Create(outcome) => {
-                    outcome.result.result = InstructionResult::OutOfGas;
-                    outcome.result.output = revm::primitives::Bytes::new();
-                }
-            }
-
-            // Clear the forced context error so output can be produced normally.
-            *self.inner.ctx.error() = Ok(());
-
-            // Receipt contract: no refunds for hard failures.
-            eip7702_refund = 0;
-
-            // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
-            let mut used = revm::primitives::HashMap::default();
-            used.insert(details.chain_id, gas_used);
-            self.inner
-                .ctx
-                .set_per_chain_gas(used, revm::primitives::HashMap::default());
-
-            // Keep the journal's per-chain gas accounting consistent with the normalized surface.
-            // Hard failures consume all gas and attribute it exclusively to the trigger chain.
-            let journal = self.inner.ctx.gwyneth_journal_mut();
-            journal.gas_used_per_chain.clear();
-            journal.gas_used_per_chain.insert(details.chain_id, gas_used);
-        }
+        let hard_failure = self.take_and_normalize_hard_failure(
+            &mut frame_result,
+            self.inner.ctx.tx().gas_limit,
+            Some(&mut eip7702_refund),
+        );
 
         handler.post_execution(
             &mut self.inner,
@@ -326,17 +416,7 @@ where
         let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
         let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
 
-        if let Some(hf) = hard_failure {
-            exec_result = match exec_result {
-                revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } => {
-                    revm::context_interface::result::ExecutionResult::Halt {
-                        reason: GwynethHaltReason::GwynethHardFailure(hf),
-                        gas_used,
-                    }
-                }
-                other => other,
-            };
-        }
+        exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
 
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
@@ -350,40 +430,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         use revm::handler::system_call::SystemCallTx;
 
-        // Clear cross-transaction Gwyneth state and align the full execution context
-        // (db/cfg/journal/local) to the system call target chain before any inspector hooks run.
-        self.inner.ctx.take_cross_chain_intent();
-        self.inner.ctx.take_cross_chain_route();
-
         let origin_chain_id = self.chain_id();
-        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            self.inner.ctx.is_xchain_enabled(),
-            self.inner.ctx.parent_chain_id(),
-            self.inner.ctx.gwyneth_configured(),
-            self.inner.ctx.extension_oracle_configured(),
-        );
-        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
-        let start_mode = gwyneth_types::ExecutionMode::from_context(
-            origin_chain_id,
-            self.inner.ctx.parent_chain_id(),
-            is_direct,
-            mode_tracking_enabled,
-        );
-
-        // Reset per-tx tracking state so system-call execution can't leak cross-chain diffs across
-        // blocks.
-        self.inner
-            .journal_mut()
-            .reset_for_new_tx(start_mode, origin_chain_id);
-
-        let _ = self
-            .inner
-            .ctx
-            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode));
-        self.inner.frame_stack.clear();
-
-        // Reset inspector state for the new system tx so hard-failure details can't leak.
-        self.inner.inspector.reset_for_new_tx();
+        self.reset_for_new_tx(origin_chain_id, false)?;
 
         self.inner
             .ctx
@@ -396,51 +444,13 @@ where
         let init_and_floor_gas = revm::interpreter::InitialAndFloorGas::new(0, 0);
         let mut frame_result = handler.inspect_execution(&mut self.inner, &init_and_floor_gas)?;
 
-        let mut hard_failure: Option<GwynethHardFailure> = None;
-        if let Some(details) = self.inner.inspector.take_hard_failure_details() {
-            let gas_used = self.inner.ctx.tx().gas_limit;
-            hard_failure = Some(GwynethHardFailure::from_details(details, gas_used));
-
-            use revm::interpreter::InstructionResult;
-            match &mut frame_result {
-                revm::handler::FrameResult::Call(outcome) => {
-                    outcome.result.result = InstructionResult::OutOfGas;
-                    outcome.result.output = revm::primitives::Bytes::new();
-                }
-                revm::handler::FrameResult::Create(outcome) => {
-                    outcome.result.result = InstructionResult::OutOfGas;
-                    outcome.result.output = revm::primitives::Bytes::new();
-                }
-            }
-
-            *self.inner.ctx.error() = Ok(());
-
-            let mut used = revm::primitives::HashMap::default();
-            used.insert(details.chain_id, gas_used);
-            self.inner
-                .ctx
-                .set_per_chain_gas(used, revm::primitives::HashMap::default());
-
-            // Keep the journal's per-chain gas accounting consistent with the normalized surface.
-            let journal = self.inner.ctx.gwyneth_journal_mut();
-            journal.gas_used_per_chain.clear();
-            journal.gas_used_per_chain.insert(details.chain_id, gas_used);
-        }
+        let hard_failure =
+            self.take_and_normalize_hard_failure(&mut frame_result, self.inner.ctx.tx().gas_limit, None);
 
         let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
         let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
 
-        if let Some(hf) = hard_failure {
-            exec_result = match exec_result {
-                revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } => {
-                    revm::context_interface::result::ExecutionResult::Halt {
-                        reason: GwynethHaltReason::GwynethHardFailure(hf),
-                        gas_used,
-                    }
-                }
-                other => other,
-            };
-        }
+        exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
 
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
