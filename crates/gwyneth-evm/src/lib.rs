@@ -7,15 +7,10 @@ extern crate alloc;
 #[cfg(not(test))]
 use gwyneth_types as _;
 
-pub mod block;
 pub mod factory;
 pub mod halt_reason;
 pub mod inspector;
 
-pub use block::{
-    GwynethBlockExecutionCtx, GwynethBlockExecutor, GwynethBlockExecutorFactory,
-    GwynethBlockExecutorFactoryTrait,
-};
 pub use factory::{GwynethEvmFactory, GwynethEvmFactoryImpl};
 pub use halt_reason::GwynethHaltReason;
 pub use inspector::GwynethInspector;
