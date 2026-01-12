@@ -22,6 +22,7 @@ pub use inspector::GwynethInspector;
 
 use alloc::string::String;
 use alloy_evm::{Database, Evm, EvmEnv};
+use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
 use gwyneth_types::ChainState;
@@ -194,6 +195,41 @@ where
     /// Override allowed chain ids for XCALLOPTIONS routing.
     pub fn set_allowed_chain_ids(&mut self, allowed_chain_ids: alloc::vec::Vec<u64>) {
         self.inner.ctx.set_allowed_chain_ids(allowed_chain_ids);
+    }
+
+    /// Configure the EVM for full Gwyneth cross-chain semantics.
+    ///
+    /// This is the canonical builder/stateless-validator configuration surface: `xchain_enabled=true`.
+    pub fn configure_xchain_enforced(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        _treasury_address: Option<Address>,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.set_parent_chain_id(parent_chain_id);
+        self.set_xchain_enabled(true);
+        self.set_capabilities(GwynethCapabilities::default());
+        self.set_gwyneth_configured(true);
+        self.set_extension_oracle_configured(true);
+        self.set_allowed_chain_ids(allowed_chain_ids.into_iter().collect());
+    }
+
+    /// Configure the EVM for tracking-only execution with vanilla EVM semantics.
+    ///
+    /// This is the canonical propose-simulator configuration surface: `xchain_enabled=false` (no
+    /// routing/interception), but tracking/STRICT/VERIFY diagnostics may still be enabled.
+    pub fn configure_tracking_only_vanilla(
+        &mut self,
+        parent_chain_id: Option<u64>,
+        _treasury_address: Option<Address>,
+        allowed_chain_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.set_parent_chain_id(parent_chain_id);
+        self.set_xchain_enabled(false);
+        self.set_capabilities(GwynethCapabilities::l1_native_only());
+        self.set_gwyneth_configured(true);
+        self.set_extension_oracle_configured(true);
+        self.set_allowed_chain_ids(allowed_chain_ids.into_iter().collect());
     }
 
 }
