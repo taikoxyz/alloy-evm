@@ -93,11 +93,11 @@ where
         Self { inner, inspect }
     }
 
-    fn ctx(&self) -> &InnerContext<DB> {
+    const fn ctx(&self) -> &InnerContext<DB> {
         &self.inner.ctx
     }
 
-    fn ctx_mut(&mut self) -> &mut InnerContext<DB> {
+    const fn ctx_mut(&mut self) -> &mut InnerContext<DB> {
         &mut self.inner.ctx
     }
 
@@ -105,12 +105,12 @@ where
     ///
     /// The journal tracks cross-chain calls, gas usage per chain,
     /// and other Gwyneth-specific execution data.
-    pub fn gwyneth_journal(&self) -> &gwyneth_types::GwynethJournal {
+    pub const fn gwyneth_journal(&self) -> &gwyneth_types::GwynethJournal {
         &self.inner.ctx.journal
     }
 
     /// Get a mutable reference to the Gwyneth journal.
-    pub fn gwyneth_journal_mut(&mut self) -> &mut gwyneth_types::GwynethJournal {
+    pub const fn gwyneth_journal_mut(&mut self) -> &mut gwyneth_types::GwynethJournal {
         &mut self.inner.ctx.journal
     }
 
@@ -149,12 +149,12 @@ where
     ///
     /// The tracking journal captures per-chain state changes during cross-chain
     /// execution.
-    pub fn tracking_journal(&self) -> &TrackingJournal<DB> {
+    pub const fn tracking_journal(&self) -> &TrackingJournal<DB> {
         &self.inner.ctx.base.journaled_state
     }
 
     /// Get a mutable reference to the tracking journal.
-    pub fn tracking_journal_mut(&mut self) -> &mut TrackingJournal<DB> {
+    pub const fn tracking_journal_mut(&mut self) -> &mut TrackingJournal<DB> {
         &mut self.inner.ctx.base.journaled_state
     }
 

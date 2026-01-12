@@ -105,12 +105,12 @@ impl GwynethEvmFactoryImpl {
     }
 
     /// Create a new factory with custom detector configuration.
-    pub fn with_detector_config(detector_config: DetectorConfig) -> Self {
+    pub const fn with_detector_config(detector_config: DetectorConfig) -> Self {
         Self { detector_config }
     }
 
     /// Get a reference to the detector configuration.
-    pub fn detector_config(&self) -> &DetectorConfig {
+    pub const fn detector_config(&self) -> &DetectorConfig {
         &self.detector_config
     }
 }

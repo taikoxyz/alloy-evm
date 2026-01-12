@@ -44,7 +44,7 @@ impl Default for GwynethBlockExecutionCtx<'_> {
 
 impl<'a> GwynethBlockExecutionCtx<'a> {
     /// Create a new execution context with default values.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             parent_hash: B256::ZERO,
             parent_beacon_block_root: None,
@@ -54,7 +54,7 @@ impl<'a> GwynethBlockExecutionCtx<'a> {
     }
 
     /// Create a context with all fields specified.
-    pub fn with_all(
+    pub const fn with_all(
         parent_hash: B256,
         parent_beacon_block_root: Option<B256>,
         ommers: &'a [Header],
@@ -65,7 +65,10 @@ impl<'a> GwynethBlockExecutionCtx<'a> {
 
     /// Create a context with parent hash and beacon root, with empty ommers and no withdrawals.
     /// Suitable for post-merge blocks where ommers are always empty.
-    pub fn with_parent_hash(parent_hash: B256, parent_beacon_block_root: Option<B256>) -> Self {
+    pub const fn with_parent_hash(
+        parent_hash: B256,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Self {
         Self { parent_hash, parent_beacon_block_root, ommers: &[], withdrawals: None }
     }
 }
@@ -101,7 +104,7 @@ pub struct GwynethBlockExecutor<'a, Evm> {
 
 impl<'a, Evm> GwynethBlockExecutor<'a, Evm> {
     /// Construct a new executor given a configured EVM and execution context.
-    pub fn new(evm: Evm, ctx: GwynethBlockExecutionCtx<'a>) -> Self {
+    pub const fn new(evm: Evm, ctx: GwynethBlockExecutionCtx<'a>) -> Self {
         Self { evm, ctx }
     }
 
@@ -111,17 +114,17 @@ impl<'a, Evm> GwynethBlockExecutor<'a, Evm> {
     }
 
     /// Access the inner EVM.
-    pub fn evm_mut(&mut self) -> &mut Evm {
+    pub const fn evm_mut(&mut self) -> &mut Evm {
         &mut self.evm
     }
 
     /// Access the inner EVM immutably.
-    pub fn evm(&self) -> &Evm {
+    pub const fn evm(&self) -> &Evm {
         &self.evm
     }
 
     /// Access the execution context.
-    pub fn ctx(&self) -> &GwynethBlockExecutionCtx<'a> {
+    pub const fn ctx(&self) -> &GwynethBlockExecutionCtx<'a> {
         &self.ctx
     }
 }
@@ -174,7 +177,7 @@ impl<F> GwynethBlockExecutorFactory<F> {
     }
 
     /// Get a reference to the inner EVM factory.
-    pub fn inner(&self) -> &F {
+    pub const fn inner(&self) -> &F {
         &self.evm_factory
     }
 }
