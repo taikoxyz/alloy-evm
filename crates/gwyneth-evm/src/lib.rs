@@ -211,10 +211,11 @@ where
     type Error = EVMError<DB::Error, InvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
+    type BlockEnv = BlockEnv;
     type Precompiles = GwynethPrecompileProvider;
     type Inspector = I;
 
-    fn block(&self) -> &BlockEnv {
+    fn block(&self) -> &Self::BlockEnv {
         &self.ctx().base.block
     }
 
@@ -274,7 +275,7 @@ where
         self.inner.system_call_with_caller(caller, contract, data)
     }
 
-    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
+    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>) {
         let InnerEvm { ctx, .. } = self.inner;
         let GwynethContext { base, .. } = ctx;
         let Context { block, cfg, journaled_state, .. } = base;
