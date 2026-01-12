@@ -25,7 +25,7 @@ use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::Address;
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
-use gwyneth_types::ChainState;
+use gwyneth_types::{ChainState, TreasuryForwarding, TreasuryForwardingMode};
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
     GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure,
@@ -59,6 +59,7 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 #[allow(missing_debug_implementations)]
 pub struct GwynethEvm<DB: Database + gwyneth_types::ChainSwitchable, I> {
     inner: InnerEvm<DB, I>,
+    treasury_address: Option<Address>,
 }
 
 impl<DB: Database + gwyneth_types::ChainSwitchable, I> GwynethEvm<DB, I>
@@ -95,7 +96,7 @@ where
             precompiles: GwynethPrecompileProvider::default(),
             frame_stack: Default::default(),
         };
-        Self { inner }
+        Self { inner, treasury_address: None }
     }
 
     fn ctx(&self) -> &InnerContext<DB> {
@@ -172,6 +173,11 @@ where
         self.inner.ctx.set_parent_chain_id(parent_chain_id);
     }
 
+    /// Sets the treasury address used for basefee-burn forwarding.
+    pub fn set_treasury_address(&mut self, treasury_address: Option<Address>) {
+        self.treasury_address = treasury_address;
+    }
+
     /// Enable or disable xchain semantics.
     pub fn set_xchain_enabled(&mut self, enabled: bool) {
         self.inner.ctx.set_xchain_enabled(enabled);
@@ -203,10 +209,11 @@ where
     pub fn configure_xchain_enforced(
         &mut self,
         parent_chain_id: Option<u64>,
-        _treasury_address: Option<Address>,
+        treasury_address: Option<Address>,
         allowed_chain_ids: impl IntoIterator<Item = u64>,
     ) {
         self.set_parent_chain_id(parent_chain_id);
+        self.set_treasury_address(treasury_address);
         self.set_xchain_enabled(true);
         self.set_capabilities(GwynethCapabilities::default());
         self.set_gwyneth_configured(true);
@@ -221,10 +228,11 @@ where
     pub fn configure_tracking_only_vanilla(
         &mut self,
         parent_chain_id: Option<u64>,
-        _treasury_address: Option<Address>,
+        treasury_address: Option<Address>,
         allowed_chain_ids: impl IntoIterator<Item = u64>,
     ) {
         self.set_parent_chain_id(parent_chain_id);
+        self.set_treasury_address(treasury_address);
         self.set_xchain_enabled(false);
         self.set_capabilities(GwynethCapabilities::l1_native_only());
         self.set_gwyneth_configured(true);
@@ -269,6 +277,7 @@ where
         // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
         self.inner.ctx.take_cross_chain_intent();
         self.inner.ctx.take_cross_chain_route();
+        self.inner.ctx.gwyneth_journal_mut().treasury_forwarding = None;
 
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
             self.inner.ctx.is_xchain_enabled(),
@@ -374,7 +383,38 @@ where
             };
         }
 
-        let state = self.inner.journal_mut().finalize();
+        let mut state = self.inner.journal_mut().finalize();
+
+        if let (Some(treasury_address), Some(parent_chain_id)) =
+            (self.treasury_address, self.inner.ctx.parent_chain_id())
+        {
+            let origin_basefee = self.inner.ctx.base.block.basefee;
+            let gas_used = exec_result.gas_used();
+            let basefee_burn = revm::primitives::U256::from(origin_basefee)
+                * revm::primitives::U256::from(gas_used);
+
+            let mode = if origin_chain_id == parent_chain_id {
+                TreasuryForwardingMode::ExposeToHost
+            } else {
+                TreasuryForwardingMode::CreditedToTreasury
+            };
+
+            self.inner.ctx.gwyneth_journal_mut().treasury_forwarding = Some(TreasuryForwarding {
+                origin_chain_id,
+                treasury_address,
+                origin_basefee,
+                gas_used,
+                basefee_burn,
+                mode,
+            });
+
+            if mode == TreasuryForwardingMode::CreditedToTreasury {
+                let treasury_account = state.entry(treasury_address).or_default();
+                treasury_account.info.balance += basefee_burn;
+                treasury_account.mark_touch();
+            }
+        }
+
         Ok(ResultAndState::new(exec_result, state))
     }
 
@@ -483,7 +523,7 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let Self { inner } = self;
+        let Self { inner, .. } = self;
         let InnerEvm { ctx, .. } = inner;
         let GwynethContext { base, .. } = ctx;
         let Context { block, cfg, journaled_state, .. } = base;
