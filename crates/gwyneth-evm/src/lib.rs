@@ -76,11 +76,13 @@ where
         inspect: bool,
     ) -> Self {
         let EvmEnv { block_env, cfg_env } = env;
+        let extension_oracle_address = detector_config.extension_oracle;
 
         let ctx = Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec)
             .with_cfg(cfg_env)
             .with_block(block_env);
-        let gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
+        let mut gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
+        gwyneth_ctx.set_extension_oracle_address(extension_oracle_address);
         let inspector = GwynethInspector::new(inspector, inspect);
         let inner = InnerEvm {
             ctx: gwyneth_ctx,
