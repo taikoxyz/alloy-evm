@@ -22,8 +22,8 @@ use core::fmt::Debug;
 use gwyneth_types::{ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode};
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHardFailure, GwynethPrecompileProvider,
-    HardFailureInspector, L2OverlayDb, TrackingJournal,
+    GwynethCapabilities, GwynethChain, GwynethContext, GwynethContextExt, GwynethHardFailure,
+    GwynethLocal, GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -31,7 +31,7 @@ use revm::{
         block::Block as _,
         journaled_state::JournalTr,
         result::{EVMError, InvalidTransaction, ResultAndState},
-        ContextSetters, ContextTr,
+        ContextSetters, ContextTr, LocalContextTr as _,
     },
     handler::{instructions::EthInstructions, EthFrame, Handler, MainnetHandler},
     inspector::{Inspector, InspectorHandler},
@@ -39,7 +39,7 @@ use revm::{
     primitives::hardfork::SpecId,
 };
 
-type InnerContext<DB> = GwynethContext<Context<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>>;
+type InnerContext<DB> = GwynethContext<DB, TrackingJournal<DB>>;
 
 type InnerEvm<DB, I> = revm::context::evm::Evm<
     InnerContext<DB>,
@@ -88,10 +88,13 @@ where
         let EvmEnv { block_env, cfg_env } = env;
         let extension_oracle_address = detector_config.extension_oracle;
 
-        let ctx = Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec)
-            .with_cfg(cfg_env)
-            .with_block(block_env);
-        let mut gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
+        let base =
+            Context::<BlockEnv, TxEnv, CfgEnv, DB, TrackingJournal<DB>>::new(db, cfg_env.spec)
+                .with_cfg(cfg_env)
+                .with_block(block_env);
+        let mut gwyneth_ctx = base
+            .with_chain(GwynethChain::with_detector(GwynethDetector::new(detector_config)))
+            .with_local(GwynethLocal::default());
         gwyneth_ctx.set_extension_oracle_address(extension_oracle_address);
         let inspector = GwynethInspector::new(inspector, user_inspector_enabled);
         let inner = InnerEvm {
@@ -117,12 +120,12 @@ where
     /// The journal tracks cross-chain calls, gas usage per chain,
     /// and other Gwyneth-specific execution data.
     pub fn gwyneth_journal(&self) -> &gwyneth_types::GwynethJournal {
-        &self.inner.ctx.journal
+        self.inner.ctx.gwyneth_journal()
     }
 
     /// Get a mutable reference to the Gwyneth journal.
     pub fn gwyneth_journal_mut(&mut self) -> &mut gwyneth_types::GwynethJournal {
-        &mut self.inner.ctx.journal
+        self.inner.ctx.gwyneth_journal_mut()
     }
 
     /// Clone the current Gwyneth journal.
@@ -131,7 +134,7 @@ where
     /// Note: This clones the journal without populating accounts_per_chain.
     /// Use `clone_gwyneth_journal_with_accounts` if you need per-chain account tracking.
     pub fn clone_gwyneth_journal(&self) -> gwyneth_types::GwynethJournal {
-        self.inner.ctx.journal.clone()
+        self.gwyneth_journal().clone()
     }
 
     /// Clone the Gwyneth journal and populate accounts_per_chain from the tracking journal.
@@ -139,7 +142,7 @@ where
     /// Phase 1 scaffolding does not yet populate per-chain account tracking; later slices
     /// will wire this through the gwyneth-owned tracking journal.
     pub fn clone_gwyneth_journal_with_accounts(&self) -> gwyneth_types::GwynethJournal {
-        self.inner.ctx.journal.clone()
+        self.gwyneth_journal().clone()
     }
 
     /// Drain callsite records captured by the always-on `JournalInspector`.
@@ -152,12 +155,12 @@ where
 
     /// Get a reference to the underlying database.
     pub fn db(&self) -> &DB {
-        self.inner.ctx.base.journaled_state.db()
+        self.inner.ctx.db()
     }
 
     /// Get a mutable reference to the underlying database.
     pub fn db_mut(&mut self) -> &mut DB {
-        self.inner.ctx.base.journaled_state.db_mut()
+        self.inner.ctx.db_mut()
     }
 
     /// Get a reference to the tracking journal.
@@ -165,12 +168,12 @@ where
     /// The tracking journal captures per-chain state changes during cross-chain
     /// execution.
     pub fn tracking_journal(&self) -> &TrackingJournal<DB> {
-        &self.inner.ctx.base.journaled_state
+        &self.inner.ctx.journaled_state
     }
 
     /// Get a mutable reference to the tracking journal.
     pub fn tracking_journal_mut(&mut self) -> &mut TrackingJournal<DB> {
-        &mut self.inner.ctx.base.journaled_state
+        &mut self.inner.ctx.journaled_state
     }
 
     /// Override the parent (L1) chain id used for cross-chain classification.
@@ -262,8 +265,7 @@ where
     ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
         // Clear cross-transaction Gwyneth state and align the full execution context
         // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
-        self.inner.ctx.clear_cross_chain_intents();
-        self.inner.ctx.take_cross_chain_route();
+        self.inner.ctx.local.clear();
 
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
             self.inner.ctx.is_xchain_enabled(),
@@ -439,11 +441,11 @@ where
     type Inspector = GwynethInspector<I>;
 
     fn block(&self) -> &Self::BlockEnv {
-        &self.ctx().base.block
+        &self.ctx().block
     }
 
     fn chain_id(&self) -> u64 {
-        self.ctx().base.cfg.chain_id
+        self.ctx().cfg.chain_id
     }
 
     fn transact_raw(
@@ -529,8 +531,7 @@ where
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
         let Self { inner, .. } = self;
         let InnerEvm { ctx, .. } = inner;
-        let GwynethContext { base, .. } = ctx;
-        let Context { block, cfg, journaled_state, .. } = base;
+        let Context { block, cfg, journaled_state, .. } = ctx;
         let db = journaled_state.into_db();
         (db, EvmEnv { block_env: block, cfg_env: cfg })
     }
@@ -541,12 +542,12 @@ where
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
         let InnerEvm { ctx, inspector, precompiles, .. } = &self.inner;
-        (ctx.base.journaled_state.db(), inspector, precompiles)
+        (ctx.db(), inspector, precompiles)
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
         let InnerEvm { ctx, inspector, precompiles, .. } = &mut self.inner;
-        (ctx.base.journaled_state.db_mut(), inspector, precompiles)
+        (ctx.db_mut(), inspector, precompiles)
     }
 }
 
@@ -591,7 +592,7 @@ where
 
     /// Return the current active chain id.
     pub fn current_chain_id(&self) -> u64 {
-        self.ctx().base.journaled_state.db().current_chain_id()
+        self.db().current_chain_id()
     }
 }
 
