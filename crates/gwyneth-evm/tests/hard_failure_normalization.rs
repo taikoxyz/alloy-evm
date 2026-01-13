@@ -3,6 +3,7 @@
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl, GwynethHaltReason};
 use gwyneth_engine::{HardFailureCode, L2OverlayDb};
+use gwyneth_types::ExecutionSurface;
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
@@ -120,7 +121,11 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
+    let mut evm = factory.create_gwyneth_evm(
+        db,
+        alloy_evm::EvmEnv { block_env, cfg_env },
+        ExecutionSurface::TxSubmission,
+    );
 
     let tx = TxEnv::builder()
         .chain_id(Some(1))
@@ -190,7 +195,11 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
+    let mut evm = factory.create_gwyneth_evm(
+        db,
+        alloy_evm::EvmEnv { block_env, cfg_env },
+        ExecutionSurface::TxSubmission,
+    );
 
     // Exercise the inspector-enabled path (the gwyneth journal inspector stays active either way).
     evm.set_inspector_enabled(true);
@@ -233,4 +242,52 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
         }
         other => panic!("expected halt: {other:?}"),
     }
+}
+
+#[test]
+fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
+    let caller = Address::from([0x10; 20]);
+    let entry = Address::from([0x13; 20]);
+    let bad_to = Address::from([0x99; 20]);
+    let target = Address::from([0x22; 20]);
+
+    let mut l1 = InMemoryDB::default();
+    let l2 = InMemoryDB::default();
+
+    insert_eoa(&mut l1, caller);
+    insert_code(
+        &mut l1,
+        entry,
+        code_structural_violation(xcalloptions_word(2, target, false), bad_to),
+    );
+
+    let mut db = L2OverlayDb::new(1, l1);
+    db.add_l2_overlay(2, l2);
+
+    let (block_env, cfg_env) = base_env();
+
+    let factory = GwynethEvmFactoryImpl::default();
+    let mut evm = factory.create_gwyneth_evm(
+        db,
+        alloy_evm::EvmEnv { block_env, cfg_env },
+        ExecutionSurface::TxSubmission,
+    );
+
+    // Disabling the user inspector must not disable the always-on `JournalInspector` that enforces
+    // structural invariants and reports hard-failure details.
+    evm.set_inspector_enabled(false);
+
+    let tx = TxEnv::builder()
+        .chain_id(Some(1))
+        .caller(caller)
+        .kind(TxKind::Call(entry))
+        .gas_limit(123_456)
+        .gas_price(0)
+        .value(U256::ZERO)
+        .data(Bytes::new())
+        .build()
+        .expect("tx build");
+
+    let out = evm.transact_raw(tx).expect("hard failure is normalized");
+    assert!(!out.result.is_success());
 }

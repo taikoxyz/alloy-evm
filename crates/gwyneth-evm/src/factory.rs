@@ -9,11 +9,11 @@
 //!
 //! [`ChainSwitchable`]: gwyneth_types::ChainSwitchable
 
-use crate::{GwynethEvm, GwynethEvmContext};
+use crate::{GwynethEvmContext, GwynethRunner};
 use alloy_evm::{Database, EvmEnv};
 use core::{error::Error, fmt::Debug, hash::Hash};
 use gwyneth_detector::DetectorConfig;
-use gwyneth_types::{ChainSwitchable, ParentLoadCheckpoints};
+use gwyneth_types::{ChainSwitchable, ExecutionSurface, ParentLoadCheckpoints};
 use revm::{
     context_interface::result::HaltReasonTr,
     inspector::{Inspector, NoOpInspector},
@@ -31,9 +31,10 @@ use revm::{
 /// ```ignore
 /// use alloy_gwyneth_evm::factory::{GwynethEvmFactory, GwynethEvmFactoryImpl};
 /// use gwyneth_engine::L2OverlayDb;
+/// use gwyneth_types::ExecutionSurface;
 ///
 /// let factory = GwynethEvmFactoryImpl::default();
-/// let evm = factory.create_gwyneth_evm(db, env);
+/// let evm = factory.create_gwyneth_evm(db, env, ExecutionSurface::TxSubmission);
 /// ```
 pub trait GwynethEvmFactory {
     /// The EVM type that this factory creates.
@@ -77,6 +78,7 @@ pub trait GwynethEvmFactory {
         &self,
         db: DB,
         evm_env: EvmEnv<Self::Spec>,
+        surface: ExecutionSurface,
     ) -> Self::Evm<DB, NoOpInspector>;
 
     /// Creates a new Gwyneth EVM instance with an inspector.
@@ -87,11 +89,12 @@ pub trait GwynethEvmFactory {
         &self,
         db: DB,
         env: EvmEnv<Self::Spec>,
+        surface: ExecutionSurface,
         inspector: I,
     ) -> Self::Evm<DB, I>;
 }
 
-/// Implementation of [`GwynethEvmFactory`] that creates [`GwynethEvm`] instances.
+/// Implementation of [`GwynethEvmFactory`] that creates [`GwynethRunner`] instances.
 ///
 /// This is the primary factory implementation for Gwyneth EVMs. It holds a
 /// [`DetectorConfig`] that configures cross-chain call detection behavior.
@@ -120,7 +123,7 @@ impl GwynethEvmFactoryImpl {
 
 impl GwynethEvmFactory for GwynethEvmFactoryImpl {
     type Evm<DB: Database + ChainSwitchable + ParentLoadCheckpoints, I: Inspector<GwynethEvmContext<DB>>> =
-        GwynethEvm<DB, I>;
+        GwynethRunner<DB, I>;
     type Context<DB: Database + ChainSwitchable + ParentLoadCheckpoints> = GwynethEvmContext<DB>;
     type Tx = revm::context::TxEnv;
     type Error<DBError: Error + Send + Sync + 'static> =
@@ -133,8 +136,9 @@ impl GwynethEvmFactory for GwynethEvmFactoryImpl {
         &self,
         db: DB,
         evm_env: EvmEnv<Self::Spec>,
+        surface: ExecutionSurface,
     ) -> Self::Evm<DB, NoOpInspector> {
-        GwynethEvm::from_env(db, evm_env, NoOpInspector, self.detector_config.clone(), false)
+        self.create_gwyneth_evm_with_inspector(db, evm_env, surface, NoOpInspector)
     }
 
     fn create_gwyneth_evm_with_inspector<
@@ -144,8 +148,9 @@ impl GwynethEvmFactory for GwynethEvmFactoryImpl {
         &self,
         db: DB,
         env: EvmEnv<Self::Spec>,
+        surface: ExecutionSurface,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        GwynethEvm::from_env(db, env, inspector, self.detector_config.clone(), true)
+        GwynethRunner::from_env(db, env, inspector, self.detector_config.clone(), surface, true)
     }
 }

@@ -19,7 +19,7 @@ use alloc::string::String;
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
-use gwyneth_types::ChainState;
+use gwyneth_types::{ChainState, ExecutionSurface};
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
     GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure,
@@ -51,11 +51,18 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 /// Gwyneth-flavoured EVM implementation that wraps the REVM context backed by the
 /// Gwyneth tracking journal and precompile set.
 #[allow(missing_debug_implementations)]
-pub struct GwynethEvm<DB: Database + gwyneth_types::ChainSwitchable, I> {
+pub struct GwynethRunner<DB: Database + gwyneth_types::ChainSwitchable, I> {
     inner: InnerEvm<DB, I>,
+    surface: ExecutionSurface,
 }
 
-impl<DB: Database + gwyneth_types::ChainSwitchable, I> GwynethEvm<DB, I>
+/// Convenience alias for the gwyneth execution runner.
+///
+/// This keeps existing call sites that refer to `GwynethEvm` compiling while the redesign
+/// migrates the public surface toward the more explicit `GwynethRunner` naming.
+pub type GwynethEvm<DB, I> = GwynethRunner<DB, I>;
+
+impl<DB: Database + gwyneth_types::ChainSwitchable, I> GwynethRunner<DB, I>
 where
     I: Inspector<InnerContext<DB>>,
 {
@@ -67,13 +74,15 @@ where
     /// * `env` - The EVM environment (block and config)
     /// * `inspector` - The inspector for tracing/debugging
     /// * `detector_config` - Configuration for cross-chain call detection
-    /// * `inspect` - Whether to enable the inspector during transaction execution
+    /// * `surface` - Execution surface kind (tx submission vs simulation-only)
+    /// * `user_inspector_enabled` - Whether to enable the user inspector (gwyneth journal inspector remains active)
     pub fn from_env(
         db: DB,
         env: EvmEnv<SpecId>,
         inspector: I,
         detector_config: DetectorConfig,
-        inspect: bool,
+        surface: ExecutionSurface,
+        user_inspector_enabled: bool,
     ) -> Self {
         let EvmEnv { block_env, cfg_env } = env;
         let extension_oracle_address = detector_config.extension_oracle;
@@ -83,7 +92,7 @@ where
             .with_block(block_env);
         let mut gwyneth_ctx = GwynethContext::new(ctx, GwynethDetector::new(detector_config));
         gwyneth_ctx.set_extension_oracle_address(extension_oracle_address);
-        let inspector = GwynethInspector::new(inspector, inspect);
+        let inspector = GwynethInspector::new(inspector, user_inspector_enabled);
         let inner = InnerEvm {
             ctx: gwyneth_ctx,
             inspector,
@@ -91,7 +100,7 @@ where
             precompiles: GwynethPrecompileProvider::default(),
             frame_stack: Default::default(),
         };
-        Self { inner }
+        Self { inner, surface }
     }
 
     fn ctx(&self) -> &InnerContext<DB> {
@@ -240,7 +249,7 @@ where
 
 }
 
-impl<DB, I> GwynethEvm<DB, I>
+impl<DB, I> GwynethRunner<DB, I>
 where
     DB: Database + gwyneth_types::ChainSwitchable + gwyneth_types::ParentLoadCheckpoints,
     I: Inspector<InnerContext<DB>>,
@@ -300,17 +309,19 @@ where
         let details = self.inner.inspector.take_hard_failure_details()?;
         let trigger_chain_id = details.chain_id;
         let hard_failure = GwynethHardFailure::from_details(details, gas_used);
+        let normalized = gwyneth_types::normalize_superrevert(self.surface, gas_used);
+        debug_assert_eq!(normalized.gas_used, gas_used, "SuperRevert normalization gas mismatch");
 
         // Rewrite the internal `FatalExternalError` into a standard Halt.
         use revm::interpreter::InstructionResult;
         match frame_result {
             revm::handler::FrameResult::Call(outcome) => {
                 outcome.result.result = InstructionResult::OutOfGas;
-                outcome.result.output = revm::primitives::Bytes::new();
+                outcome.result.output = normalized.output.clone();
             }
             revm::handler::FrameResult::Create(outcome) => {
                 outcome.result.result = InstructionResult::OutOfGas;
-                outcome.result.output = revm::primitives::Bytes::new();
+                outcome.result.output = normalized.output.clone();
             }
         }
 
@@ -319,7 +330,7 @@ where
 
         // Receipt contract: no refunds for hard failures.
         if let Some(refund) = eip7702_refund {
-            *refund = 0;
+            *refund = normalized.refund;
         }
 
         // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
@@ -358,7 +369,7 @@ where
     }
 }
 
-impl<DB, I> Evm for GwynethEvm<DB, I>
+impl<DB, I> Evm for GwynethRunner<DB, I>
 where
     DB: Database + gwyneth_types::ChainSwitchable + gwyneth_types::ParentLoadCheckpoints,
     I: Inspector<InnerContext<DB>>,
@@ -459,7 +470,7 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let Self { inner } = self;
+        let Self { inner, .. } = self;
         let InnerEvm { ctx, .. } = inner;
         let GwynethContext { base, .. } = ctx;
         let Context { block, cfg, journaled_state, .. } = base;
@@ -482,7 +493,7 @@ where
     }
 }
 
-impl<L1DB, L2DB, I> GwynethEvm<L2OverlayDb<L1DB, L2DB>, I>
+impl<L1DB, L2DB, I> GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>
 where
     L1DB: revm::Database + Debug,
     L2DB: revm::Database + Debug,
@@ -508,6 +519,7 @@ where
             EvmEnv { block_env, cfg_env },
             inspector,
             DetectorConfig::default(),
+            ExecutionSurface::TxSubmission,
             true,
         )
     }
@@ -542,7 +554,7 @@ pub trait GwynethEvmExt {
         chain_id: u64,
         env: EvmEnv<SpecId>,
         inspector: I,
-    ) -> GwynethEvm<L2OverlayDb<L1DB, L2DB>, I>
+    ) -> GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>
     where
         L1DB: revm::Database + Debug,
         L2DB: revm::Database + Debug,
@@ -559,7 +571,7 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
         chain_id: u64,
         env: EvmEnv<SpecId>,
         inspector: I,
-    ) -> GwynethEvm<L2OverlayDb<L1DB, L2DB>, I>
+    ) -> GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>
     where
         L1DB: revm::Database + Debug,
         L2DB: revm::Database + Debug,
@@ -570,6 +582,13 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
         let mut overlay = L2OverlayDb::new(gwyneth_types::L1_CHAIN_ID, l1_db);
         overlay.add_l2_overlay(chain_id, l2_db);
         let _ = overlay.switch_to_chain(chain_id);
-        GwynethEvm::from_env(overlay, env, inspector, self.detector_config.clone(), true)
+        GwynethRunner::from_env(
+            overlay,
+            env,
+            inspector,
+            self.detector_config.clone(),
+            ExecutionSurface::TxSubmission,
+            true,
+        )
     }
 }

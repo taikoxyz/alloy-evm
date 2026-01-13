@@ -3,6 +3,7 @@
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl};
 use gwyneth_engine::L2OverlayDb;
+use gwyneth_types::ExecutionSurface;
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
@@ -34,7 +35,11 @@ fn redesign_alloy_smoke() {
     block_env.gas_limit = 30_000_000;
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
+    let mut evm = factory.create_gwyneth_evm(
+        db,
+        alloy_evm::EvmEnv { block_env, cfg_env },
+        ExecutionSurface::TxSubmission,
+    );
 
     let mut tx = TxEnv::default();
     tx.caller = caller;
