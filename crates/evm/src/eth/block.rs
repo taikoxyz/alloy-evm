@@ -32,6 +32,8 @@ pub struct EthBlockExecutionCtx<'a> {
     pub parent_hash: B256,
     /// Parent beacon block root.
     pub parent_beacon_block_root: Option<B256>,
+    /// The block's extra data.
+    pub extra_data: &'a [u8],
     /// Block ommers
     pub ommers: &'a [Header],
     /// Block withdrawals.
