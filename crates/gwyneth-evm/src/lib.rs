@@ -19,20 +19,21 @@ use alloc::string::String;
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
-use gwyneth_types::{ChainState, ExecutionSurface};
+use gwyneth_types::{ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode};
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHandler, GwynethHardFailure,
-    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
+    GwynethCapabilities, GwynethContext, GwynethContextExt, GwynethHardFailure, GwynethPrecompileProvider,
+    HardFailureInspector, L2OverlayDb, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
     context_interface::{
+        block::Block as _,
         journaled_state::JournalTr,
         result::{EVMError, InvalidTransaction, ResultAndState},
         ContextSetters, ContextTr,
     },
-    handler::{instructions::EthInstructions, EthFrame, Handler},
+    handler::{instructions::EthInstructions, EthFrame, Handler, MainnetHandler},
     inspector::{Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
     primitives::hardfork::SpecId,
@@ -349,6 +350,60 @@ where
         Some(hard_failure)
     }
 
+    fn apply_treasury_forwarding_post_run(
+        &mut self,
+        origin_chain_id: u64,
+        gas_used: u64,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        // Phase 22.3: treasury forwarding of the basefee-burn component.
+        //
+        // Must not run on simulation-only surfaces and must not run for system calls (explicitly fee-free).
+        if self.surface != ExecutionSurface::TxSubmission {
+            return Ok(());
+        }
+
+        let tx = self.inner.ctx.tx();
+        if tx.caller == revm::handler::system_call::SYSTEM_ADDRESS {
+            return Ok(());
+        }
+
+        let Some(treasury_address) = self.inner.ctx.treasury_address() else {
+            return Ok(());
+        };
+
+        let origin_basefee = self.inner.ctx.block().basefee();
+        let basefee_burn =
+            revm::primitives::U256::from(origin_basefee) * revm::primitives::U256::from(gas_used);
+
+        let mode = match self.inner.ctx.parent_chain_id() {
+            Some(parent) if parent == origin_chain_id => TreasuryForwardingMode::ExposeToHost,
+            _ => TreasuryForwardingMode::CreditedToTreasury,
+        };
+
+        self.inner.ctx.gwyneth_journal_mut().treasury_forwarding = Some(TreasuryForwarding {
+            origin_chain_id,
+            treasury_address,
+            origin_basefee,
+            gas_used,
+            basefee_burn,
+            mode,
+        });
+
+        if mode == TreasuryForwardingMode::CreditedToTreasury && !basefee_burn.is_zero() {
+            // Expect the active chain state to be restored before the host-boundary fee surface is applied.
+            debug_assert_eq!(
+                self.db().current_chain_id(),
+                origin_chain_id,
+                "expected end-of-tx chain alignment before treasury credit"
+            );
+            self.inner
+                .journal_mut()
+                .balance_incr(treasury_address, basefee_burn)?;
+        }
+
+        Ok(())
+    }
+
     fn attach_hard_failure_to_execution_result(
         exec_result: revm::context_interface::result::ExecutionResult<GwynethHaltReason>,
         hard_failure: Option<GwynethHardFailure>,
@@ -404,7 +459,7 @@ where
 
         self.inner.ctx.set_tx(tx);
 
-        let mut handler = GwynethHandler::<_, Self::Error, EthFrame<EthInterpreter>>::new();
+        let mut handler = MainnetHandler::<_, Self::Error, EthFrame<EthInterpreter>>::default();
 
         // Mirror `InspectorHandler::inspect_run_without_catch_error`, but normalize hard failures
         // before post-execution output runs (the internal `FatalExternalError` would otherwise
@@ -431,6 +486,8 @@ where
 
         exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
 
+        self.apply_treasury_forwarding_post_run(origin_chain_id, exec_result.gas_used())?;
+
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
     }
@@ -450,7 +507,7 @@ where
             .ctx
             .set_tx(TxEnv::new_system_tx_with_caller(caller, contract, data));
 
-        let mut handler = GwynethHandler::<_, Self::Error, EthFrame<EthInterpreter>>::new();
+        let mut handler = MainnetHandler::<_, Self::Error, EthFrame<EthInterpreter>>::default();
 
         // Mirror `InspectorHandler::inspect_run_system_call`, but normalize hard failures before
         // output is computed.
