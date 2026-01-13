@@ -25,6 +25,9 @@ use revm::{
 mod block;
 pub use block::*;
 
+mod precomputed_outcome;
+pub use precomputed_outcome::*;
+
 pub mod dao_fork;
 pub mod eip6110;
 pub mod receipt_builder;
