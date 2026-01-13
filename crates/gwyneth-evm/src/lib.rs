@@ -31,10 +31,10 @@ use revm::{
         block::Block as _,
         journaled_state::JournalTr,
         result::{EVMError, InvalidTransaction, ResultAndState},
-        ContextSetters, ContextTr, LocalContextTr as _,
+        ContextTr, LocalContextTr as _,
     },
-    handler::{instructions::EthInstructions, EthFrame, Handler, MainnetHandler},
-    inspector::{Inspector, InspectorHandler},
+    handler::{instructions::EthInstructions, EthFrame},
+    InspectEvm, InspectSystemCallEvm, Inspector,
     interpreter::interpreter::EthInterpreter,
     primitives::hardfork::SpecId,
 };
@@ -303,38 +303,74 @@ where
         Ok(())
     }
 
-    fn take_and_normalize_hard_failure(
+    fn apply_superrevert_fee_surface_to_balance_deltas(
         &mut self,
-        frame_result: &mut revm::handler::FrameResult,
-        gas_used: u64,
-        eip7702_refund: Option<&mut i64>,
-    ) -> Option<GwynethHardFailure> {
+        origin_chain_id: u64,
+        expected_gas_used: u64,
+        actual_gas_used: u64,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        if expected_gas_used <= actual_gas_used {
+            return Ok(());
+        }
+
+        // Hard-failure contract: full gas must be charged even if pre-execution refunds (e.g.
+        // EIP-7702) were applied by the handler.
+        let missing_gas = expected_gas_used - actual_gas_used;
+
+        // Align the active chain before mutating fee surface accounting.
+        debug_assert_eq!(
+            self.db().current_chain_id(),
+            origin_chain_id,
+            "expected end-of-tx chain alignment before SuperRevert fee normalization"
+        );
+
+        use revm::context_interface::{Block as _, Cfg as _, Transaction as _};
+        let basefee = self.inner.ctx.block().basefee() as u128;
+        let effective_gas_price = self.inner.ctx.tx().effective_gas_price(basefee);
+
+        let spec_id: SpecId = self.inner.ctx.cfg().spec().into();
+        let coinbase_gas_price = if spec_id.is_enabled_in(SpecId::LONDON) {
+            effective_gas_price.saturating_sub(basefee)
+        } else {
+            effective_gas_price
+        };
+
+        let missing_fee =
+            revm::primitives::U256::from(effective_gas_price.saturating_mul(missing_gas as u128));
+        let missing_beneficiary_fee =
+            revm::primitives::U256::from(coinbase_gas_price.saturating_mul(missing_gas as u128));
+
+        let caller = self.inner.ctx.tx().caller();
+        let beneficiary = self.inner.ctx.block().beneficiary();
+
+        {
+            let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
+            debug_assert!(
+                caller_account.decr_balance(missing_fee),
+                "SuperRevert fee normalization underflow"
+            );
+        }
+
+        if !missing_beneficiary_fee.is_zero() {
+            let mut beneficiary_account = self
+                .inner
+                .ctx
+                .journal_mut()
+                .load_account_mut(beneficiary)?
+                .data;
+            debug_assert!(
+                beneficiary_account.incr_balance(missing_beneficiary_fee),
+                "SuperRevert fee normalization beneficiary overflow"
+            );
+        }
+
+        Ok(())
+    }
+
+    fn take_hard_failure(&mut self, gas_used: u64) -> Option<(u64, GwynethHardFailure)> {
         let details = self.inner.inspector.take_hard_failure_details()?;
         let trigger_chain_id = details.chain_id;
         let hard_failure = GwynethHardFailure::from_details(details, gas_used);
-        let normalized = gwyneth_types::normalize_superrevert(self.surface, gas_used);
-        debug_assert_eq!(normalized.gas_used, gas_used, "SuperRevert normalization gas mismatch");
-
-        // Rewrite the internal `FatalExternalError` into a standard Halt.
-        use revm::interpreter::InstructionResult;
-        match frame_result {
-            revm::handler::FrameResult::Call(outcome) => {
-                outcome.result.result = InstructionResult::OutOfGas;
-                outcome.result.output = normalized.output.clone();
-            }
-            revm::handler::FrameResult::Create(outcome) => {
-                outcome.result.result = InstructionResult::OutOfGas;
-                outcome.result.output = normalized.output.clone();
-            }
-        }
-
-        // Clear the forced context error so output can be produced normally.
-        *self.inner.ctx.error() = Ok(());
-
-        // Receipt contract: no refunds for hard failures.
-        if let Some(refund) = eip7702_refund {
-            *refund = normalized.refund;
-        }
 
         // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
         let mut used = revm::primitives::HashMap::default();
@@ -349,7 +385,7 @@ where
         journal.gas_used_per_chain.clear();
         journal.gas_used_per_chain.insert(trigger_chain_id, gas_used);
 
-        Some(hard_failure)
+        Some((trigger_chain_id, hard_failure))
     }
 
     fn apply_treasury_forwarding_post_run(
@@ -459,33 +495,34 @@ where
 
         self.reset_for_new_tx(origin_chain_id, true)?;
 
-        self.inner.ctx.set_tx(tx);
+        let mut exec_result = self.inner.inspect_one_tx(tx)?;
 
-        let mut handler = MainnetHandler::<_, Self::Error, EthFrame<EthInterpreter>>::default();
+        // Normalize gwyneth hard failures after core has produced a stable terminal halt, but
+        // before we finalize state (so per-chain attribution and fee corrections are captured).
+        let expected_gas_used = self.inner.ctx.tx().gas_limit;
+        let hard_failure = match self.take_hard_failure(expected_gas_used) {
+            Some((_trigger_chain_id, hard_failure)) => {
+                let actual_gas_used = exec_result.gas_used();
+                self.apply_superrevert_fee_surface_to_balance_deltas(
+                    origin_chain_id,
+                    expected_gas_used,
+                    actual_gas_used,
+                )?;
 
-        // Mirror `InspectorHandler::inspect_run_without_catch_error`, but normalize hard failures
-        // before post-execution output runs (the internal `FatalExternalError` would otherwise
-        // panic when surfaced through `post_execution::output`).
-        let init_and_floor_gas = handler.validate(&mut self.inner)?;
-        let mut eip7702_refund = handler.pre_execution(&mut self.inner)? as i64;
-        let mut frame_result = handler.inspect_execution(&mut self.inner, &init_and_floor_gas)?;
+                if expected_gas_used != actual_gas_used {
+                    if let revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } =
+                        &mut exec_result
+                    {
+                        *gas_used = expected_gas_used;
+                    }
+                }
 
-        let hard_failure = self.take_and_normalize_hard_failure(
-            &mut frame_result,
-            self.inner.ctx.tx().gas_limit,
-            Some(&mut eip7702_refund),
-        );
+                Some(hard_failure)
+            }
+            None => None,
+        };
 
-        handler.post_execution(
-            &mut self.inner,
-            &mut frame_result,
-            init_and_floor_gas,
-            eip7702_refund,
-        )?;
-
-        let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
         let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
-
         exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
 
         self.apply_treasury_forwarding_post_run(origin_chain_id, exec_result.gas_used())?;
@@ -500,29 +537,18 @@ where
         contract: revm::primitives::Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        use revm::handler::system_call::SystemCallTx;
-
         let origin_chain_id = self.chain_id();
         self.reset_for_new_tx(origin_chain_id, false)?;
 
-        self.inner
-            .ctx
-            .set_tx(TxEnv::new_system_tx_with_caller(caller, contract, data));
+        let exec_result =
+            self.inner
+                .inspect_one_system_call_with_caller(caller, contract, data)?;
 
-        let mut handler = MainnetHandler::<_, Self::Error, EthFrame<EthInterpreter>>::default();
+        let expected_gas_used = self.inner.ctx.tx().gas_limit;
+        let hard_failure = self.take_hard_failure(expected_gas_used).map(|(_, hf)| hf);
 
-        // Mirror `InspectorHandler::inspect_run_system_call`, but normalize hard failures before
-        // output is computed.
-        let init_and_floor_gas = revm::interpreter::InitialAndFloorGas::new(0, 0);
-        let mut frame_result = handler.inspect_execution(&mut self.inner, &init_and_floor_gas)?;
-
-        let hard_failure =
-            self.take_and_normalize_hard_failure(&mut frame_result, self.inner.ctx.tx().gas_limit, None);
-
-        let exec_result = handler.execution_result(&mut self.inner, frame_result)?;
-        let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
-
-        exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
+        let exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
+        let exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
 
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
