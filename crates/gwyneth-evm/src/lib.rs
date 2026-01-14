@@ -22,10 +22,10 @@ use alloy_primitives::{Address, Bytes};
 use core::fmt::Debug;
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    CfgChainIdSetter, GwynethContext, GwynethContextExt, GwynethHandler, GwynethPrecompileProvider,
-    L2OverlayDb, TrackingContextExt, TrackingJournal,
+    GwynethContext, GwynethContextExt, GwynethHandler, GwynethPrecompileProvider, L2OverlayDb,
+    TrackingContextExt, TrackingJournal,
 };
-use gwyneth_types::{ExecutionMode, ParentChainId};
+use gwyneth_types::{ChainState, ExecutionMode, L1_CHAIN_ID};
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
     context_interface::{
@@ -53,7 +53,7 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 /// Gwyneth-flavoured EVM implementation that wraps the REVM context backed by the
 /// Gwyneth tracking journal and precompile set.
 #[allow(missing_debug_implementations)]
-pub struct GwynethEvm<DB: Database, I> {
+pub struct GwynethEvm<DB: Database + gwyneth_types::ChainSwitchable, I> {
     inner: InnerEvm<DB, I>,
     inspect: bool,
 }
@@ -123,16 +123,42 @@ where
         self.inner.ctx.journal.clone()
     }
 
-    /// Clone the Gwyneth journal and populate accounts_per_chain from the tracking journal.
+    /// Clone the Gwyneth journal and include any accounts_per_chain updates.
     ///
-    /// This is the recommended method for capturing the journal state when you need
-    /// per-chain state root calculation. It copies the address-to-chain mapping from
-    /// the `TrackingJournal` into the `GwynethJournal.accounts_per_chain` field.
+    /// Note: accounts_per_chain is populated during `commit_multi_chain`, so ensure
+    /// you commit before cloning if you need per-chain account tracking.
     pub fn clone_gwyneth_journal_with_accounts(&self) -> gwyneth_types::GwynethJournal {
-        let mut journal = self.inner.ctx.journal.clone();
-        // Copy accounts_per_chain from TrackingJournal
-        journal.accounts_per_chain = self.tracking_journal().accounts_per_chain();
-        journal
+        self.inner.ctx.journal.clone()
+    }
+
+    /// Update the configured parent (L1) chain id.
+    pub fn set_parent_chain_id(&mut self, parent_chain_id: Option<u64>) {
+        self.inner.ctx.set_parent_chain_id(parent_chain_id);
+    }
+
+    /// Update the allowed chain ids for XCALLOPTIONS routing.
+    pub fn set_allowed_chain_ids(&mut self, allowed_chain_ids: Vec<u64>) {
+        self.inner.ctx.set_allowed_chain_ids(allowed_chain_ids);
+    }
+
+    /// Enable or disable cross-chain semantics.
+    pub fn set_xchain_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_xchain_enabled(enabled);
+    }
+
+    /// Update whether the gwyneth config is present for tracking-only execution.
+    pub fn set_gwyneth_configured(&mut self, configured: bool) {
+        self.inner.ctx.set_gwyneth_configured(configured);
+    }
+
+    /// Update whether the extension oracle is configured for tracking-only execution.
+    pub fn set_extension_oracle_configured(&mut self, configured: bool) {
+        self.inner.ctx.set_extension_oracle_configured(configured);
+    }
+
+    /// Update the treasury address for basefee-burn forwarding.
+    pub fn set_treasury_address(&mut self, treasury_address: Option<Address>) {
+        self.inner.ctx.set_treasury_address(treasury_address);
     }
 
     /// Get a reference to the underlying database.
@@ -175,35 +201,38 @@ where
     where
         DB: revm::database_interface::DatabaseCommit,
     {
-        // Try to get per-chain state from the tracking journal
-        let per_chain_opt = self.tracking_journal_mut().take_last_per_chain_state();
+        // Drain staged per-chain state captured by finalize.
+        let pending = self.tracking_journal_mut().take_pending_commit_state();
+        let original_chain_id = self.db().current_chain_id();
+        {
+            let journal = self.gwyneth_journal_mut();
+            for address in state.keys() {
+                journal.record_account_modified(original_chain_id, *address);
+            }
+            for (chain_id, changes) in pending.iter() {
+                for address in changes.keys() {
+                    journal.record_account_modified(*chain_id, *address);
+                }
+            }
+        }
 
-        if let Some(per_chain) = per_chain_opt {
-            // Save the original chain ID to restore later
-            let original_chain_id = self.db().current_chain_id();
+        // Commit active-chain changes.
+        self.db_mut().commit(state);
 
-            // Commit changes to each chain
-            for (chain_id, changes) in per_chain {
-                // Switch to target chain and commit
+        if !pending.is_empty() {
+            for (chain_id, changes) in pending {
                 if self.db_mut().switch_to_chain(chain_id).is_ok() {
                     self.db_mut().commit(changes);
                 }
-                // If switch fails, skip committing these changes
-                // (chain may not be registered in the overlay)
             }
-
-            // Restore the original chain ID
             let _ = self.db_mut().switch_to_chain(original_chain_id);
-        } else {
-            // Fallback: commit whole state to current chain
-            self.db_mut().commit(state);
         }
     }
 }
 
 impl<DB, I> Evm for GwynethEvm<DB, I>
 where
-    DB: Database + gwyneth_types::ChainSwitchable + ParentChainId,
+    DB: Database + gwyneth_types::ChainSwitchable,
     I: Inspector<InnerContext<DB>>,
 {
     type DB = DB;
@@ -232,8 +261,8 @@ where
         let start_mode = match self.inner.ctx.execution_mode() {
             ExecutionMode::L1Simulated => ExecutionMode::L1Simulated,
             _ => {
-                let parent_chain_id = self.inner.ctx.db().parent_chain_id();
-                if origin_chain_id == parent_chain_id {
+                if self.inner.ctx.parent_chain_id().is_some_and(|parent| parent == origin_chain_id)
+                {
                     ExecutionMode::L1Direct
                 } else {
                     ExecutionMode::L2
@@ -242,17 +271,18 @@ where
         };
 
         // Clear per-tx gwyneth state and align the context to the transaction origin chain.
-        self.inner.ctx.take_pending_chain_switch();
-        self.inner.ctx.take_last_intercepted_switch();
-        self.inner.ctx.set_chain_switch_return_to(None);
+        self.inner.ctx.clear_cross_chain_intents();
+        let _ = self.inner.ctx.take_cross_chain_route();
+        self.inner.ctx.clear_post_frame_actions();
         self.inner.ctx.tracking_journal_mut().reset_for_new_tx(start_mode, origin_chain_id);
-
-        if self.db_mut().switch_to_chain(origin_chain_id).is_err() {
+        if self
+            .inner
+            .ctx
+            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode))
+            .is_err()
+        {
             return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
         }
-        self.inner.ctx.set_cfg_chain_id(origin_chain_id);
-        self.inner.ctx.set_tracking_chain_id(origin_chain_id);
-        self.inner.ctx.set_execution_mode(start_mode);
         self.inner.frame_stack.clear();
 
         self.inner.ctx.set_tx(tx);
@@ -279,7 +309,7 @@ where
         let InnerEvm { ctx, .. } = self.inner;
         let GwynethContext { base, .. } = ctx;
         let Context { block, cfg, journaled_state, .. } = base;
-        let db = journaled_state.into_database();
+        let db = journaled_state.into_db();
         (db, EvmEnv { block_env: block, cfg_env: cfg })
     }
 
@@ -316,7 +346,7 @@ where
         block_env: BlockEnv,
         cfg_env: CfgEnv,
     ) -> Self {
-        let mut overlay = L2OverlayDb::new(l1_db);
+        let mut overlay = L2OverlayDb::new(L1_CHAIN_ID, l1_db);
         overlay.add_l2_overlay(chain_id, l2_db);
         let _ = overlay.switch_to_chain(chain_id);
         Self::from_env(
@@ -380,7 +410,7 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
         L2DB::Error: Debug + Send + Sync + 'static,
         I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>,
     {
-        let mut overlay = L2OverlayDb::new(l1_db);
+        let mut overlay = L2OverlayDb::new(L1_CHAIN_ID, l1_db);
         overlay.add_l2_overlay(chain_id, l2_db);
         let _ = overlay.switch_to_chain(chain_id);
         GwynethEvm::from_env(overlay, env, inspector, self.detector_config.clone(), true)
