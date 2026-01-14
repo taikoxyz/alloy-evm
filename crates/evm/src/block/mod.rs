@@ -253,6 +253,14 @@ pub trait BlockExecutor {
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError>;
 
+    /// Returns `true` if this executor is operating on a precomputed-outcome short-circuit path.
+    ///
+    /// This is used by host-boundary code to conditionally run additional validations without
+    /// re-executing transactions.
+    fn has_precomputed_outcome(&self) -> bool {
+        false
+    }
+
     /// A helper to invoke [`BlockExecutor::finish`] returning only the [`BlockExecutionResult`].
     fn apply_post_execution_changes(
         self,

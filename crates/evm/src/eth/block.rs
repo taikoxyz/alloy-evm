@@ -5,6 +5,7 @@ use super::{
     receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder, ReceiptBuilderCtx},
     spec::{EthExecutorSpec, EthSpec},
     EthEvmFactory,
+    PrecomputedBlockOutcome,
 };
 use crate::{
     block::{
@@ -16,10 +17,11 @@ use crate::{
     Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
 };
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
-use alloy_consensus::{Header, Transaction, TxReceipt};
+use alloy_consensus::{Header, ReceiptEnvelope, Transaction, TxReceipt};
 use alloy_eips::{eip4895::Withdrawals, eip7685::Requests, Encodable2718};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Log, B256};
+use core::ops::DerefMut;
 use revm::{
     context::Block, context_interface::result::ResultAndState, database::State, DatabaseCommit,
     Inspector,
@@ -27,13 +29,15 @@ use revm::{
 
 /// Context for Ethereum block execution.
 #[derive(Debug, Clone)]
-pub struct EthBlockExecutionCtx<'a> {
+pub struct EthBlockExecutionCtx<'a, Receipt = ReceiptEnvelope> {
     /// Parent block hash.
     pub parent_hash: B256,
     /// Parent beacon block root.
     pub parent_beacon_block_root: Option<B256>,
     /// The block's extra data.
     pub extra_data: &'a [u8],
+    /// Optional precomputed outcome for diff-backed execution.
+    pub precomputed_outcome: Option<PrecomputedBlockOutcome<Receipt>>,
     /// Block ommers
     pub ommers: &'a [Header],
     /// Block withdrawals.
@@ -47,7 +51,7 @@ pub struct EthBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     pub spec: Spec,
 
     /// Context for block execution.
-    pub ctx: EthBlockExecutionCtx<'a>,
+    pub ctx: EthBlockExecutionCtx<'a, R::Receipt>,
     /// Inner EVM.
     pub evm: Evm,
     /// Utility to call system smart contracts.
@@ -71,7 +75,12 @@ where
     R: ReceiptBuilder,
 {
     /// Creates a new [`EthBlockExecutor`]
-    pub fn new(evm: Evm, ctx: EthBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
+    pub fn new(
+        evm: Evm,
+        ctx: EthBlockExecutionCtx<'a, R::Receipt>,
+        spec: Spec,
+        receipt_builder: R,
+    ) -> Self {
         Self {
             evm,
             ctx,
@@ -100,6 +109,10 @@ where
     type Evm = E;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
+        if self.ctx.precomputed_outcome.is_some() {
+            return Ok(());
+        }
+
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
         let state_clear_flag =
             self.spec.is_spurious_dragon_active_at_block(self.evm.block().number().saturating_to());
@@ -110,6 +123,26 @@ where
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
         Ok(())
+    }
+
+    fn execute_transaction_with_commit_condition(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        f: impl FnOnce(&revm::context::result::ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> crate::block::CommitChanges,
+    ) -> Result<Option<u64>, BlockExecutionError> {
+        if self.ctx.precomputed_outcome.is_some() {
+            return Ok(None);
+        }
+
+        // Execute transaction without committing.
+        let output = self.execute_transaction_without_commit(&tx)?;
+
+        if !f(&output.result).should_commit() {
+            return Ok(None);
+        }
+
+        let gas_used = self.commit_transaction(output, tx)?;
+        Ok(Some(gas_used))
     }
 
     fn execute_transaction_without_commit(
@@ -174,6 +207,16 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
+        if let Some(precomputed) = self.ctx.precomputed_outcome {
+            // Install the diff bundle directly into the underlying State and prevent any
+            // additional transition merges from mutating it.
+            let state = self.evm.db_mut().deref_mut();
+            state.transition_state = None;
+            state.bundle_state = precomputed.bundle;
+
+            return Ok((self.evm, precomputed.result));
+        }
+
         let requests = if self
             .spec
             .is_prague_active_at_timestamp(self.evm.block().timestamp().saturating_to())
@@ -247,6 +290,10 @@ where
         ))
     }
 
+    fn has_precomputed_outcome(&self) -> bool {
+        self.ctx.precomputed_outcome.is_some()
+    }
+
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
         self.system_caller.with_state_hook(hook);
     }
@@ -306,7 +353,7 @@ where
     Self: 'static,
 {
     type EvmFactory = EvmF;
-    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
+    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a, R::Receipt>;
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
 
@@ -324,5 +371,155 @@ where
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
         EthBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eth::{ComparisonInputs, ParentHeaderView};
+    use alloy_consensus::{transaction::Recovered, Signed, TxEnvelope, TxLegacy};
+    use alloy_primitives::map::HashMap;
+    use alloy_primitives::{Address, Bloom, Bytes, Signature, U256};
+    use revm::{
+        database::{
+            states::{bundle_state::BundleRetention, BundleState},
+            State as RevmState,
+        },
+        primitives::B256 as RevmB256,
+        state::{AccountInfo, Bytecode},
+    };
+
+    #[derive(Debug, Default)]
+    struct PanicDb;
+
+    impl revm::Database for PanicDb {
+        type Error = core::convert::Infallible;
+
+        fn basic(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            panic!("unexpected DB access")
+        }
+
+        fn code_by_hash(&mut self, _code_hash: RevmB256) -> Result<Bytecode, Self::Error> {
+            panic!("unexpected DB access")
+        }
+
+        fn storage(
+            &mut self,
+            _address: Address,
+            _index: revm::primitives::StorageKey,
+        ) -> Result<revm::primitives::StorageValue, Self::Error> {
+            panic!("unexpected DB access")
+        }
+
+        fn block_hash(&mut self, _number: u64) -> Result<RevmB256, Self::Error> {
+            panic!("unexpected DB access")
+        }
+    }
+
+    fn dummy_tx() -> Recovered<TxEnvelope> {
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 21_000,
+            to: alloy_primitives::TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        let mut sig_bytes = [0u8; 65];
+        sig_bytes[64] = 27;
+        let sig = Signature::from_raw_array(&sig_bytes).expect("signature bytes");
+
+        let signed = Signed::new_unchecked(tx, sig, B256::ZERO);
+        let envelope = TxEnvelope::Legacy(signed);
+        Recovered::new_unchecked(envelope, Address::ZERO)
+    }
+
+    fn non_empty_bundle() -> BundleState {
+        BundleState::new(
+            [(
+                Address::from([0x11; 20]),
+                None,
+                Some(AccountInfo::default()),
+                HashMap::default(),
+            )],
+            Vec::<Vec<(Address, Option<Option<AccountInfo>>, Vec<(revm::primitives::StorageKey, revm::primitives::StorageValue)>)>>::new(),
+            Vec::<(RevmB256, Bytecode)>::new(),
+        )
+    }
+
+    #[test]
+    fn precomputed_outcome_short_circuits_execution_and_installs_bundle() {
+        let mut state = RevmState::builder()
+            .with_database(PanicDb::default())
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
+
+        let mut cfg_env = revm::context::CfgEnv::default();
+        cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
+        cfg_env.chain_id = 1;
+
+        let mut block_env = revm::context::BlockEnv::default();
+        block_env.number = U256::from(1);
+        block_env.timestamp = U256::from(25);
+        block_env.gas_limit = 30_000_000;
+
+        let evm_env = crate::EvmEnv { block_env, cfg_env };
+        let evm = EthEvmFactory::default().create_evm(&mut state, evm_env);
+
+        let bundle = non_empty_bundle();
+        let expected = BlockExecutionResult::<ReceiptEnvelope> {
+            receipts: Vec::new(),
+            requests: Requests::default(),
+            gas_used: 123,
+            blob_gas_used: 0,
+        };
+
+        let precomputed = PrecomputedBlockOutcome {
+            result: expected.clone(),
+            bundle,
+            comparison_inputs: ComparisonInputs {
+                tx_root: B256::ZERO,
+                receipts_root: B256::ZERO,
+                logs_bloom: Bloom::ZERO,
+                gas_used: expected.gas_used,
+                withdrawals_root: None,
+                blob_gas_used: None,
+                requests_hash: None,
+            },
+            parent_header: ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None },
+        };
+
+        let ctx = EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            extra_data: &[],
+            precomputed_outcome: Some(precomputed),
+            ommers: &[],
+            withdrawals: None,
+        };
+
+        let mut executor = EthBlockExecutor::new(evm, ctx, EthSpec::mainnet(), AlloyReceiptBuilder);
+
+        executor
+            .apply_pre_execution_changes()
+            .expect("precomputed path skips system calls");
+
+        executor
+            .execute_transaction(&dummy_tx())
+            .expect("precomputed path skips tx execution");
+
+        let (mut evm, result) = executor.finish().expect("finish succeeds");
+        assert_eq!(result, expected);
+
+        let state = evm.db_mut().deref_mut();
+        assert!(state.transition_state.is_none());
+        assert_eq!(state.bundle_state.state.len(), 1);
+
+        state.merge_transitions(BundleRetention::Reverts);
+        assert_eq!(state.bundle_state.state.len(), 1);
     }
 }
