@@ -258,6 +258,49 @@ where
     DB: Database + gwyneth_types::ChainSwitchable + gwyneth_types::ParentLoadCheckpoints,
     I: Inspector<InnerContext<DB>>,
 {
+    fn ensure_origin_chain_alignment(
+        &mut self,
+        origin_chain_id: u64,
+        context: &'static str,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        if self.db().current_chain_id() == origin_chain_id {
+            return Ok(());
+        }
+
+        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
+            self.inner.ctx.is_xchain_enabled(),
+            self.inner.ctx.parent_chain_id(),
+            self.inner.ctx.gwyneth_configured(),
+            self.inner.ctx.extension_oracle_configured(),
+        );
+        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
+        let start_mode = gwyneth_types::ExecutionMode::from_context(
+            origin_chain_id,
+            self.inner.ctx.parent_chain_id(),
+            is_direct,
+            mode_tracking_enabled,
+        );
+
+        self.inner
+            .ctx
+            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode))
+            .map_err(|_| {
+                EVMError::Custom(alloc::format!(
+                    "{context}: failed to restore origin chain (wanted={origin_chain_id}, got={})",
+                    self.db().current_chain_id()
+                ))
+            })?;
+
+        if self.db().current_chain_id() != origin_chain_id {
+            return Err(EVMError::Custom(alloc::format!(
+                "{context}: origin chain misaligned after apply_chain_state (wanted={origin_chain_id}, got={})",
+                self.db().current_chain_id()
+            )));
+        }
+
+        Ok(())
+    }
+
     fn reset_for_new_tx(
         &mut self,
         origin_chain_id: u64,
@@ -317,12 +360,10 @@ where
         // EIP-7702) were applied by the handler.
         let missing_gas = expected_gas_used - actual_gas_used;
 
-        // Align the active chain before mutating fee surface accounting.
-        debug_assert_eq!(
-            self.db().current_chain_id(),
+        self.ensure_origin_chain_alignment(
             origin_chain_id,
-            "expected end-of-tx chain alignment before SuperRevert fee normalization"
-        );
+            "apply_superrevert_fee_surface_to_balance_deltas",
+        )?;
 
         use revm::context_interface::{Block as _, Cfg as _, Transaction as _};
         let basefee = self.inner.ctx.block().basefee() as u128;
@@ -428,12 +469,7 @@ where
         });
 
         if mode == TreasuryForwardingMode::CreditedToTreasury && !basefee_burn.is_zero() {
-            // Expect the active chain state to be restored before the host-boundary fee surface is applied.
-            debug_assert_eq!(
-                self.db().current_chain_id(),
-                origin_chain_id,
-                "expected end-of-tx chain alignment before treasury credit"
-            );
+            self.ensure_origin_chain_alignment(origin_chain_id, "apply_treasury_forwarding_post_run")?;
             self.inner
                 .journal_mut()
                 .balance_incr(treasury_address, basefee_burn)?;
