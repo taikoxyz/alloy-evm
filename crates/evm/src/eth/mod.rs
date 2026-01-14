@@ -28,6 +28,10 @@ pub use block::*;
 mod precomputed_outcome;
 pub use precomputed_outcome::*;
 
+#[cfg(feature = "test-utils")]
+/// Test-only helpers for asserting transaction execution behavior.
+pub mod test_utils;
+
 pub mod dao_fork;
 pub mod eip6110;
 pub mod receipt_builder;

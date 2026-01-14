@@ -149,6 +149,9 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+        #[cfg(feature = "test-utils")]
+        crate::eth::test_utils::record_tx_execution();
+
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
         let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
