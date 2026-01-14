@@ -19,7 +19,9 @@ use alloc::string::String;
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::Bytes;
 use core::fmt::Debug;
-use gwyneth_types::{ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode};
+use gwyneth_types::{
+    normalize_superrevert, ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode,
+};
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
     GwynethCapabilities, GwynethChain, GwynethContext, GwynethContextExt, GwynethHardFailure,
@@ -538,18 +540,19 @@ where
         let expected_gas_used = self.inner.ctx.tx().gas_limit;
         let hard_failure = match self.take_hard_failure(expected_gas_used) {
             Some((_trigger_chain_id, hard_failure)) => {
+                let normalized = normalize_superrevert(self.surface, expected_gas_used);
                 let actual_gas_used = exec_result.gas_used();
                 self.apply_superrevert_fee_surface_to_balance_deltas(
                     origin_chain_id,
-                    expected_gas_used,
+                    normalized.gas_used,
                     actual_gas_used,
                 )?;
 
-                if expected_gas_used != actual_gas_used {
+                if normalized.gas_used != actual_gas_used {
                     if let revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } =
                         &mut exec_result
                     {
-                        *gas_used = expected_gas_used;
+                        *gas_used = normalized.gas_used;
                     }
                 }
 
@@ -576,12 +579,26 @@ where
         let origin_chain_id = self.chain_id();
         self.reset_for_new_tx(origin_chain_id, false)?;
 
-        let exec_result =
+        let mut exec_result =
             self.inner
                 .inspect_one_system_call_with_caller(caller, contract, data)?;
 
         let expected_gas_used = self.inner.ctx.tx().gas_limit;
-        let hard_failure = self.take_hard_failure(expected_gas_used).map(|(_, hf)| hf);
+        let hard_failure = match self.take_hard_failure(expected_gas_used) {
+            Some((_trigger_chain_id, hard_failure)) => {
+                let normalized = normalize_superrevert(self.surface, expected_gas_used);
+                let actual_gas_used = exec_result.gas_used();
+                if normalized.gas_used != actual_gas_used {
+                    if let revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } =
+                        &mut exec_result
+                    {
+                        *gas_used = normalized.gas_used;
+                    }
+                }
+                Some(hard_failure)
+            }
+            None => None,
+        };
 
         let exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
         let exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
