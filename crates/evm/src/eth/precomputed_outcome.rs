@@ -2,6 +2,8 @@
 //!
 //! These types allow a caller to supply a fully computed block outcome (receipts + state diff)
 //! along with the deterministic commitment inputs needed to validate it at the host boundary.
+//! Fork-derived header field validation requires a minimal view of the parent header, supplied at
+//! the host boundary (not embedded in the precomputed outcome).
 
 use crate::block::BlockExecutionResult;
 use alloy_consensus::BlockHeader;
@@ -41,6 +43,8 @@ pub struct ParentHeaderView {
     pub blob_gas_used: Option<u64>,
     /// Parent excess blob gas.
     pub excess_blob_gas: Option<u64>,
+    /// Parent base fee per gas, with missing values treated as 0.
+    pub base_fee_per_gas: u64,
 }
 
 /// A validated, diff-backed block outcome that can be installed without executing transactions.
@@ -52,24 +56,6 @@ pub struct PrecomputedBlockOutcome<Receipt> {
     pub bundle: BundleState,
     /// The commitment inputs recomputed from block-local data.
     pub comparison_inputs: ComparisonInputs,
-    /// Minimal view of the parent header required for fork-derived field validation.
-    pub parent_header: ParentHeaderView,
-}
-
-/// Minimal metadata extracted from [`PrecomputedBlockOutcome`] required for host-boundary
-/// validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrecomputedOutcomeMeta {
-    /// The commitment inputs recomputed from block-local data.
-    pub comparison_inputs: ComparisonInputs,
-    /// Minimal view of the parent header required for fork-derived field validation.
-    pub parent_header: ParentHeaderView,
-}
-
-impl<Receipt> From<&PrecomputedBlockOutcome<Receipt>> for PrecomputedOutcomeMeta {
-    fn from(value: &PrecomputedBlockOutcome<Receipt>) -> Self {
-        Self { comparison_inputs: value.comparison_inputs.clone(), parent_header: value.parent_header }
-    }
 }
 
 /// Minimal header view used by [`canonicalize_and_compare`].
@@ -232,6 +218,15 @@ pub enum PrecomputedOutcomeValidationError {
         got: u64,
     },
 
+    /// The `extra_data` does not match the expected bytes.
+    #[error("extra_data mismatch: expected_len={expected_len} got_len={got_len}")]
+    ExtraDataMismatch {
+        /// Expected extra-data length.
+        expected_len: usize,
+        /// Observed extra-data length.
+        got_len: usize,
+    },
+
     /// The `withdrawals_root` is required but missing.
     #[error("withdrawals_root missing")]
     WithdrawalsRootMissing,
@@ -310,6 +305,7 @@ pub fn canonicalize_and_compare<H, S>(
     state_root: B256,
     block_number: u64,
     timestamp: u64,
+    expected_extra_data: &[u8],
     parent_header: ParentHeaderView,
     fork_schedule: &S,
 ) -> Result<(), PrecomputedOutcomeValidationError>
@@ -321,6 +317,14 @@ where
         return Err(PrecomputedOutcomeValidationError::StateRootMismatch {
             expected: state_root,
             got: da_header.state_root(),
+        });
+    }
+
+    let da_extra_data = HeaderView::extra_data(da_header);
+    if da_extra_data != expected_extra_data {
+        return Err(PrecomputedOutcomeValidationError::ExtraDataMismatch {
+            expected_len: expected_extra_data.len(),
+            got_len: da_extra_data.len(),
         });
     }
 
@@ -413,7 +417,7 @@ where
             let expected = params.next_block_excess_blob_gas_osaka(
                 parent_excess_blob_gas,
                 parent_blob_gas_used,
-                0,
+                parent_header.base_fee_per_gas,
             );
 
             if got != expected {
@@ -450,7 +454,6 @@ mod tests {
     use super::*;
     use alloy_consensus::{Header, EMPTY_OMMER_ROOT_HASH};
     use alloy_primitives::{Address, Bytes, U256};
-    use revm::database::states::BundleState;
 
     fn test_header() -> Header {
         Header {
@@ -517,7 +520,8 @@ mod tests {
             header.state_root,
             header.number,
             header.timestamp,
-            ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None },
+            header.extra_data.as_ref(),
+            ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None, base_fee_per_gas: 0 },
             &schedule,
         )
         .unwrap_err();
@@ -552,7 +556,8 @@ mod tests {
             header.state_root,
             header.number,
             header.timestamp,
-            ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None },
+            header.extra_data.as_ref(),
+            ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None, base_fee_per_gas: 0 },
             &schedule,
         )
         .unwrap_err();
@@ -587,31 +592,43 @@ mod tests {
             header.state_root,
             header.number,
             header.timestamp,
-            ParentHeaderView { timestamp: 15, blob_gas_used: None, excess_blob_gas: None },
+            header.extra_data.as_ref(),
+            ParentHeaderView { timestamp: 15, blob_gas_used: None, excess_blob_gas: None, base_fee_per_gas: 0 },
             &schedule,
         )
         .expect("first post-cancun excess_blob_gas uses zero parent values");
     }
 
     #[test]
-    fn precomputed_meta_extracts_only_small_fields() {
-        let outcome = PrecomputedBlockOutcome::<()> {
-            result: BlockExecutionResult::default(),
-            bundle: BundleState::default(),
-            comparison_inputs: ComparisonInputs {
-                tx_root: B256::ZERO,
-                receipts_root: B256::ZERO,
-                logs_bloom: Bloom::ZERO,
-                gas_used: 0,
-                withdrawals_root: None,
-                blob_gas_used: None,
-                requests_hash: None,
-            },
-            parent_header: ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None },
+    fn canonicalize_rejects_extra_data_mismatch() {
+        let schedule = TestSchedule;
+        let mut header = test_header();
+        header.timestamp = 5;
+        header.state_root = B256::from([0x11; 32]);
+        header.extra_data = Bytes::from(vec![0x01, 0x02]);
+
+        let inputs = ComparisonInputs {
+            tx_root: header.transactions_root,
+            receipts_root: header.receipts_root,
+            logs_bloom: header.logs_bloom,
+            gas_used: header.gas_used,
+            withdrawals_root: None,
+            blob_gas_used: None,
+            requests_hash: None,
         };
 
-        let meta = PrecomputedOutcomeMeta::from(&outcome);
-        assert_eq!(meta.parent_header, outcome.parent_header);
-        assert_eq!(meta.comparison_inputs, outcome.comparison_inputs);
+        let err = canonicalize_and_compare(
+            &header,
+            &inputs,
+            header.state_root,
+            header.number,
+            header.timestamp,
+            &[0x03, 0x04],
+            ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None, base_fee_per_gas: 0 },
+            &schedule,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, PrecomputedOutcomeValidationError::ExtraDataMismatch { expected_len: 2, got_len: 2 });
     }
 }

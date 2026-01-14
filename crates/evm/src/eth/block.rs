@@ -380,7 +380,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eth::{ComparisonInputs, ParentHeaderView};
+    use crate::eth::ComparisonInputs;
     use alloy_consensus::{transaction::Recovered, Signed, TxEnvelope, TxLegacy};
     use alloy_primitives::map::HashMap;
     use alloy_primitives::{Address, Bloom, Bytes, Signature, U256};
@@ -493,7 +493,6 @@ mod tests {
                 blob_gas_used: None,
                 requests_hash: None,
             },
-            parent_header: ParentHeaderView { timestamp: 0, blob_gas_used: None, excess_blob_gas: None },
         };
 
         let ctx = EthBlockExecutionCtx {
