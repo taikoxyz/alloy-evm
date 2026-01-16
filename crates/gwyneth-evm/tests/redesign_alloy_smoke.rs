@@ -1,7 +1,8 @@
 //! Redesign smoke test for `alloy-gwyneth-evm` wiring.
 
+use alloy_evm::evm::BoundedEvmFactory as _;
 use alloy_evm::Evm as _;
-use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl};
+use alloy_gwyneth_evm::GwynethEvmFactoryImpl;
 use gwyneth_engine::L2OverlayDb;
 use gwyneth_types::ExecutionSurface;
 use revm::{
@@ -35,11 +36,9 @@ fn redesign_alloy_smoke() {
     block_env.gas_limit = 30_000_000;
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(
-        db,
-        alloy_evm::EvmEnv { block_env, cfg_env },
-        ExecutionSurface::TxSubmission,
-    );
+    let mut evm = factory
+        .for_surface(ExecutionSurface::TxSubmission)
+        .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     let mut tx = TxEnv::default();
     tx.caller = caller;

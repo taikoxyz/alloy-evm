@@ -1,7 +1,8 @@
 //! Hard-failure normalization contract tests for `alloy-gwyneth-evm`.
 
+use alloy_evm::evm::BoundedEvmFactory as _;
 use alloy_evm::Evm as _;
-use alloy_gwyneth_evm::{GwynethEvmFactory, GwynethEvmFactoryImpl, GwynethHaltReason};
+use alloy_gwyneth_evm::{GwynethEvmFactoryImpl, GwynethHaltReason};
 use gwyneth_engine::{HardFailureCode, L2OverlayDb};
 use gwyneth_types::ExecutionSurface;
 use revm::{
@@ -121,11 +122,9 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(
-        db,
-        alloy_evm::EvmEnv { block_env, cfg_env },
-        ExecutionSurface::TxSubmission,
-    );
+    let mut evm = factory
+        .for_surface(ExecutionSurface::TxSubmission)
+        .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     let tx = TxEnv::builder()
         .chain_id(Some(1))
@@ -195,11 +194,9 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(
-        db,
-        alloy_evm::EvmEnv { block_env, cfg_env },
-        ExecutionSurface::TxSubmission,
-    );
+    let mut evm = factory
+        .for_surface(ExecutionSurface::TxSubmission)
+        .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     // Exercise the inspector-enabled path (the gwyneth journal inspector stays active either way).
     evm.set_inspector_enabled(true);
@@ -267,11 +264,9 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
     let (block_env, cfg_env) = base_env();
 
     let factory = GwynethEvmFactoryImpl::default();
-    let mut evm = factory.create_gwyneth_evm(
-        db,
-        alloy_evm::EvmEnv { block_env, cfg_env },
-        ExecutionSurface::TxSubmission,
-    );
+    let mut evm = factory
+        .for_surface(ExecutionSurface::TxSubmission)
+        .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     // Disabling the user inspector must not disable the always-on `JournalInspector` that enforces
     // structural invariants and reports hard-failure details.

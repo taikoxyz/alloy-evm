@@ -11,7 +11,7 @@ pub mod factory;
 pub mod halt_reason;
 pub mod inspector;
 
-pub use factory::{GwynethEvmFactory, GwynethEvmFactoryImpl};
+pub use factory::GwynethEvmFactoryImpl;
 pub use halt_reason::GwynethHaltReason;
 pub use inspector::GwynethInspector;
 
@@ -676,8 +676,8 @@ where
     }
 }
 
-// Note: The `GwynethEvmFactory` trait is now defined in the `factory` module.
-// Use `GwynethEvmFactoryImpl` for the concrete factory implementation.
+// Note: Use `GwynethEvmFactoryImpl::for_surface(..)` + `alloy_evm::evm::BoundedEvmFactory<DB>`
+// to express gwyneth-only DB bounds without mirroring the canonical `EvmFactory` trait.
 
 /// Convenience alias for the Gwyneth context backing the inspector.
 pub type GwynethEvmContext<DB> = InnerContext<DB>;
