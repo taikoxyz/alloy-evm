@@ -300,6 +300,91 @@ pub trait EvmFactory {
     ) -> Self::Evm<DB, I>;
 }
 
+/// A DB-bounded variant of [`EvmFactory`].
+///
+/// This is useful for factory implementations that require additional bounds on `DB` beyond
+/// [`Database`], which cannot be expressed via [`EvmFactory`]'s generic associated type bounds.
+pub trait BoundedEvmFactory<DB: Database> {
+    /// The EVM type that this factory creates.
+    type Evm<I: Inspector<Self::Context>>: Evm<
+        DB = DB,
+        Tx = Self::Tx,
+        HaltReason = Self::HaltReason,
+        Error = Self::Error<DB::Error>,
+        Spec = Self::Spec,
+        BlockEnv = Self::BlockEnv,
+        Precompiles = Self::Precompiles,
+        Inspector = Self::EvmInspector<I>,
+    >;
+
+    /// The EVM context for inspectors.
+    type Context: ContextTr<Db = DB, Journal: JournalExt>;
+
+    /// The inspector type used by the created EVM, derived from an external `I`.
+    type EvmInspector<I: Inspector<Self::Context>>: Inspector<Self::Context>;
+
+    /// Transaction environment.
+    type Tx: IntoTxEnv<Self::Tx>;
+    /// EVM error. See [`Evm::Error`].
+    type Error<DBError: Error + Send + Sync + 'static>: EvmError;
+    /// Halt reason. See [`Evm::HaltReason`].
+    type HaltReason: HaltReasonTr + Send + Sync + 'static;
+    /// The EVM specification identifier, see [`Evm::Spec`].
+    type Spec: Debug + Copy + Hash + Eq + Send + Sync + Default + 'static;
+    /// Block environment used by the EVM. See [`Evm::BlockEnv`].
+    type BlockEnv: BlockEnvironment;
+    /// Precompiles used by the EVM.
+    type Precompiles;
+
+    /// Creates a new instance of an EVM.
+    fn create_evm(
+        &self,
+        db: DB,
+        evm_env: EvmEnv<Self::Spec, Self::BlockEnv>,
+    ) -> Self::Evm<NoOpInspector>;
+
+    /// Creates a new instance of an EVM with an inspector.
+    fn create_evm_with_inspector<I: Inspector<Self::Context>>(
+        &self,
+        db: DB,
+        input: EvmEnv<Self::Spec, Self::BlockEnv>,
+        inspector: I,
+    ) -> Self::Evm<I>;
+}
+
+impl<T, DB> BoundedEvmFactory<DB> for T
+where
+    T: EvmFactory,
+    DB: Database,
+{
+    type Evm<I: Inspector<Self::Context>> = <T as EvmFactory>::Evm<DB, I>;
+    type Context = <T as EvmFactory>::Context<DB>;
+    type EvmInspector<I: Inspector<Self::Context>> = I;
+    type Tx = <T as EvmFactory>::Tx;
+    type Error<DBError: Error + Send + Sync + 'static> = <T as EvmFactory>::Error<DBError>;
+    type HaltReason = <T as EvmFactory>::HaltReason;
+    type Spec = <T as EvmFactory>::Spec;
+    type BlockEnv = <T as EvmFactory>::BlockEnv;
+    type Precompiles = <T as EvmFactory>::Precompiles;
+
+    fn create_evm(
+        &self,
+        db: DB,
+        evm_env: EvmEnv<Self::Spec, Self::BlockEnv>,
+    ) -> Self::Evm<NoOpInspector> {
+        <T as EvmFactory>::create_evm(self, db, evm_env)
+    }
+
+    fn create_evm_with_inspector<I: Inspector<Self::Context>>(
+        &self,
+        db: DB,
+        input: EvmEnv<Self::Spec, Self::BlockEnv>,
+        inspector: I,
+    ) -> Self::Evm<I> {
+        <T as EvmFactory>::create_evm_with_inspector(self, db, input, inspector)
+    }
+}
+
 /// An extension trait for [`EvmFactory`] providing useful non-overridable methods.
 pub trait EvmFactoryExt: EvmFactory {
     /// Creates a new [`TxTracer`] instance with the given database, input and fused inspector.
