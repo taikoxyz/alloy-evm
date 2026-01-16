@@ -26,6 +26,7 @@ use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
     GwynethCapabilities, GwynethChain, GwynethContext, GwynethContextExt, GwynethHardFailure,
     GwynethLocal, GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
+    TrackingJournalControlExt as _, TrackingJournalIntoDbExt as _,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
