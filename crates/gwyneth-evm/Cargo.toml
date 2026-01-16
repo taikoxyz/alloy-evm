@@ -24,6 +24,9 @@ gwyneth-engine = { path = "../../../revm-private/revm-private/gwyneth/crates/gwy
 gwyneth-detector = { path = "../../../revm-private/revm-private/gwyneth/crates/gwyneth-detector", default-features = false }
 gwyneth-types = { path = "../../../revm-private/revm-private/gwyneth/crates/gwyneth-types", default-features = false }
 
+[dev-dependencies]
+either = "1.15.0"
+
 [features]
 default = ["std"]
 std = [
