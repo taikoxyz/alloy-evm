@@ -103,6 +103,13 @@ where
         }
     }
 
+    fn before_call(&mut self, context: &mut CTX, inputs: &mut CallInputs) {
+        self.journal.before_call(context, inputs);
+        if self.user_enabled {
+            self.user.before_call(context, inputs);
+        }
+    }
+
     fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
         self.journal
             .call(context, inputs)
@@ -141,4 +148,3 @@ where
         }
     }
 }
-
