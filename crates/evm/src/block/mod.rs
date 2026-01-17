@@ -261,6 +261,14 @@ pub trait BlockExecutor {
         false
     }
 
+    /// Returns the `extra_data` bytes that must match the block header when validating
+    /// precomputed-outcome execution.
+    ///
+    /// This is only meaningful if [`Self::has_precomputed_outcome`] returns `true`.
+    fn expected_extra_data(&self) -> Option<&[u8]> {
+        None
+    }
+
     /// A helper to invoke [`BlockExecutor::finish`] returning only the [`BlockExecutionResult`].
     fn apply_post_execution_changes(
         self,

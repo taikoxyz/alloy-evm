@@ -297,6 +297,10 @@ where
         self.ctx.precomputed_outcome.is_some()
     }
 
+    fn expected_extra_data(&self) -> Option<&[u8]> {
+        self.ctx.precomputed_outcome.is_some().then_some(self.ctx.extra_data)
+    }
+
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
         self.system_caller.with_state_hook(hook);
     }
