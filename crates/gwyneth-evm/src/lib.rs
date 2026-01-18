@@ -26,7 +26,7 @@ use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
     GwynethCapabilities, GwynethChain, GwynethContext, GwynethContextExt, GwynethHardFailure,
     GwynethLocal, GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
-    TrackingJournalControlExt as _, TrackingJournalIntoDbExt as _,
+    TrackingJournalControlExt,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -329,9 +329,7 @@ where
 
         // Reset per-tx tracking state so cross-chain diffs and forced-warm sets can't leak across
         // transactions.
-        self.inner
-            .journal_mut()
-            .reset_for_new_tx(start_mode, origin_chain_id);
+        TrackingJournalControlExt::reset_for_new_tx(self.inner.journal_mut(), start_mode, origin_chain_id);
 
         let apply_result = self
             .inner
