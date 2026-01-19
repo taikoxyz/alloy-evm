@@ -24,8 +24,8 @@ use gwyneth_types::{
 };
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethCapabilities, GwynethChain, GwynethContext, GwynethContextExt, GwynethHardFailure,
-    GwynethLocal, GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
+    GwynethCapabilities, GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal,
+    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
     TrackingJournalControlExt,
 };
 use revm::{
@@ -98,7 +98,9 @@ where
         let mut gwyneth_ctx = base
             .with_chain(GwynethChain::with_detector(GwynethDetector::new(detector_config)))
             .with_local(GwynethLocal::default());
-        gwyneth_ctx.set_extension_oracle_address(extension_oracle_address);
+        gwyneth_ctx
+            .chain_mut()
+            .set_extension_oracle_address(extension_oracle_address);
         let inspector = GwynethInspector::new(inspector, user_inspector_enabled);
         let inner = InnerEvm {
             ctx: gwyneth_ctx,
@@ -123,12 +125,12 @@ where
     /// The journal tracks cross-chain calls, gas usage per chain,
     /// and other Gwyneth-specific execution data.
     pub fn gwyneth_journal(&self) -> &gwyneth_types::GwynethJournal {
-        self.inner.ctx.gwyneth_journal()
+        self.inner.ctx.chain().gwyneth_journal()
     }
 
     /// Get a mutable reference to the Gwyneth journal.
     pub fn gwyneth_journal_mut(&mut self) -> &mut gwyneth_types::GwynethJournal {
-        self.inner.ctx.gwyneth_journal_mut()
+        self.inner.ctx.chain_mut().gwyneth_journal_mut()
     }
 
     /// Clone the current Gwyneth journal.
@@ -181,37 +183,40 @@ where
 
     /// Override the parent (L1) chain id used for cross-chain classification.
     pub fn set_parent_chain_id(&mut self, parent_chain_id: Option<u64>) {
-        self.inner.ctx.set_parent_chain_id(parent_chain_id);
+        self.inner.ctx.chain_mut().set_parent_chain_id(parent_chain_id);
     }
 
     /// Override the treasury address used for basefee-burn forwarding (Phase 22.3).
     pub fn set_treasury_address(&mut self, treasury_address: Option<revm::primitives::Address>) {
-        self.inner.ctx.set_treasury_address(treasury_address);
+        self.inner.ctx.chain_mut().set_treasury_address(treasury_address);
     }
 
     /// Enable or disable xchain semantics.
     pub fn set_xchain_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_xchain_enabled(enabled);
+        gwyneth_engine::set_xchain_enabled(&mut self.inner.ctx, enabled);
     }
 
     /// Override capability toggles for chain switching and prewarming.
     pub fn set_capabilities(&mut self, capabilities: GwynethCapabilities) {
-        self.inner.ctx.set_capabilities(capabilities);
+        gwyneth_engine::set_capabilities(&mut self.inner.ctx, capabilities);
     }
 
     /// Mark gwyneth config as present (used for tracking-only execution when xchain is disabled).
     pub fn set_gwyneth_configured(&mut self, configured: bool) {
-        self.inner.ctx.set_gwyneth_configured(configured);
+        self.inner.ctx.chain_mut().set_gwyneth_configured(configured);
     }
 
     /// Mark extension oracle config as present (used for tracking-only execution when xchain is disabled).
     pub fn set_extension_oracle_configured(&mut self, configured: bool) {
-        self.inner.ctx.set_extension_oracle_configured(configured);
+        self.inner
+            .ctx
+            .chain_mut()
+            .set_extension_oracle_configured(configured);
     }
 
     /// Override allowed chain ids for XCALLOPTIONS routing.
     pub fn set_allowed_chain_ids(&mut self, allowed_chain_ids: alloc::vec::Vec<u64>) {
-        self.inner.ctx.set_allowed_chain_ids(allowed_chain_ids);
+        self.inner.ctx.chain_mut().set_allowed_chain_ids(allowed_chain_ids);
     }
 
     /// Apply the standard gwyneth EVM configuration bundle for xchain-enforced execution
@@ -271,23 +276,24 @@ where
         }
 
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            self.inner.ctx.is_xchain_enabled(),
-            self.inner.ctx.parent_chain_id(),
-            self.inner.ctx.gwyneth_configured(),
-            self.inner.ctx.extension_oracle_configured(),
+            self.inner.ctx.chain().is_xchain_enabled(),
+            self.inner.ctx.chain().parent_chain_id(),
+            self.inner.ctx.chain().gwyneth_configured(),
+            self.inner.ctx.chain().extension_oracle_configured(),
         );
-        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
+        let is_direct = self.inner.ctx.chain().parent_chain_id() == Some(origin_chain_id);
         let start_mode = gwyneth_types::ExecutionMode::from_context(
             origin_chain_id,
-            self.inner.ctx.parent_chain_id(),
+            self.inner.ctx.chain().parent_chain_id(),
             is_direct,
             mode_tracking_enabled,
         );
 
-        self.inner
-            .ctx
-            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode))
-            .map_err(|_| {
+        gwyneth_engine::apply_chain_state(
+            &mut self.inner.ctx,
+            ChainState::new(origin_chain_id, origin_chain_id, start_mode),
+        )
+        .map_err(|_| {
                 EVMError::Custom(alloc::format!(
                     "{context}: failed to restore origin chain (wanted={origin_chain_id}, got={})",
                     self.db().current_chain_id()
@@ -314,15 +320,15 @@ where
         self.inner.ctx.local.clear();
 
         let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            self.inner.ctx.is_xchain_enabled(),
-            self.inner.ctx.parent_chain_id(),
-            self.inner.ctx.gwyneth_configured(),
-            self.inner.ctx.extension_oracle_configured(),
+            self.inner.ctx.chain().is_xchain_enabled(),
+            self.inner.ctx.chain().parent_chain_id(),
+            self.inner.ctx.chain().gwyneth_configured(),
+            self.inner.ctx.chain().extension_oracle_configured(),
         );
-        let is_direct = self.inner.ctx.parent_chain_id() == Some(origin_chain_id);
+        let is_direct = self.inner.ctx.chain().parent_chain_id() == Some(origin_chain_id);
         let start_mode = gwyneth_types::ExecutionMode::from_context(
             origin_chain_id,
-            self.inner.ctx.parent_chain_id(),
+            self.inner.ctx.chain().parent_chain_id(),
             is_direct,
             mode_tracking_enabled,
         );
@@ -331,10 +337,10 @@ where
         // transactions.
         TrackingJournalControlExt::reset_for_new_tx(self.inner.journal_mut(), start_mode, origin_chain_id);
 
-        let apply_result = self
-            .inner
-            .ctx
-            .apply_chain_state(ChainState::new(origin_chain_id, origin_chain_id, start_mode));
+        let apply_result = gwyneth_engine::apply_chain_state(
+            &mut self.inner.ctx,
+            ChainState::new(origin_chain_id, origin_chain_id, start_mode),
+        );
         if strict_chain_id && apply_result.is_err() {
             return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
         }
@@ -417,13 +423,15 @@ where
         // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
         let mut used = revm::primitives::HashMap::default();
         used.insert(trigger_chain_id, gas_used);
-        self.inner
-            .ctx
-            .set_per_chain_gas(used, revm::primitives::HashMap::default());
+        gwyneth_engine::set_per_chain_gas(
+            &mut self.inner.ctx,
+            used,
+            revm::primitives::HashMap::default(),
+        );
 
         // Keep the journal's per-chain gas accounting consistent with the normalized surface.
         // Hard failures consume all gas and attribute it exclusively to the trigger chain.
-        let journal = self.inner.ctx.gwyneth_journal_mut();
+        let journal = self.inner.ctx.chain_mut().gwyneth_journal_mut();
         journal.gas_used_per_chain.clear();
         journal.gas_used_per_chain.insert(trigger_chain_id, gas_used);
 
@@ -447,7 +455,7 @@ where
             return Ok(());
         }
 
-        let Some(treasury_address) = self.inner.ctx.treasury_address() else {
+        let Some(treasury_address) = self.inner.ctx.chain().treasury_address() else {
             return Ok(());
         };
 
@@ -455,12 +463,12 @@ where
         let basefee_burn =
             revm::primitives::U256::from(origin_basefee) * revm::primitives::U256::from(gas_used);
 
-        let mode = match self.inner.ctx.parent_chain_id() {
+        let mode = match self.inner.ctx.chain().parent_chain_id() {
             Some(parent) if parent == origin_chain_id => TreasuryForwardingMode::ExposeToHost,
             _ => TreasuryForwardingMode::CreditedToTreasury,
         };
 
-        self.inner.ctx.gwyneth_journal_mut().treasury_forwarding = Some(TreasuryForwarding {
+        self.inner.ctx.chain_mut().gwyneth_journal_mut().treasury_forwarding = Some(TreasuryForwarding {
             origin_chain_id,
             treasury_address,
             origin_basefee,
@@ -662,9 +670,11 @@ where
 
     /// Switch the active overlay chain.
     pub fn switch_chain(&mut self, chain_id: u64) -> Result<(), String> {
-        let mode = self.ctx().execution_mode();
-        self.ctx_mut()
-            .apply_chain_state(ChainState::new(chain_id, chain_id, mode))
+        let mode = self.ctx().local().execution_mode();
+        gwyneth_engine::apply_chain_state(
+            self.ctx_mut(),
+            ChainState::new(chain_id, chain_id, mode),
+        )
             .map_err(|_| "Chain switch failed".to_string())
     }
 
