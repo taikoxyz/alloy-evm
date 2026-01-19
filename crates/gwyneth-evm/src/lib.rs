@@ -154,7 +154,7 @@ where
     ///
     /// This is a per-transaction buffer: `transact*` resets it before execution and callers
     /// should drain it after the transaction completes.
-    pub fn take_callsite_records(&mut self) -> alloc::vec::Vec<gwyneth_types::oracle::CallsiteRecord> {
+    pub fn take_callsite_records(&mut self) -> alloc::vec::Vec<gwyneth_types::recorder::CallsiteRecord> {
         self.inner.inspector.journal_mut().take_callsite_records()
     }
 
