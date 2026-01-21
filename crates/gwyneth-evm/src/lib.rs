@@ -24,9 +24,8 @@ use gwyneth_types::{
 };
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethCapabilities, GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal,
-    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
-    TrackingJournalControlExt,
+    GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal, GwynethPrecompileProvider,
+    HardFailureInspector, L2OverlayDb, TrackingJournal, TrackingJournalControlExt,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -191,68 +190,29 @@ where
         self.inner.ctx.chain_mut().set_treasury_address(treasury_address);
     }
 
-    /// Enable or disable xchain semantics.
-    pub fn set_xchain_enabled(&mut self, enabled: bool) {
-        gwyneth_engine::set_xchain_enabled(&mut self.inner.ctx, enabled);
-    }
-
-    /// Override capability toggles for chain switching and prewarming.
-    pub fn set_capabilities(&mut self, capabilities: GwynethCapabilities) {
-        gwyneth_engine::set_capabilities(&mut self.inner.ctx, capabilities);
-    }
-
-    /// Mark gwyneth config as present (used for tracking-only execution when xchain is disabled).
-    pub fn set_gwyneth_configured(&mut self, configured: bool) {
-        self.inner.ctx.chain_mut().set_gwyneth_configured(configured);
-    }
-
-    /// Mark extension oracle config as present (used for tracking-only execution when xchain is disabled).
-    pub fn set_extension_oracle_configured(&mut self, configured: bool) {
-        self.inner
-            .ctx
-            .chain_mut()
-            .set_extension_oracle_configured(configured);
-    }
-
     /// Override allowed chain ids for XCALLOPTIONS routing.
     pub fn set_allowed_chain_ids(&mut self, allowed_chain_ids: alloc::vec::Vec<u64>) {
         self.inner.ctx.chain_mut().set_allowed_chain_ids(allowed_chain_ids);
     }
 
-    /// Apply the standard gwyneth EVM configuration bundle for xchain-enforced execution
-    /// (builder/stateless validation).
+    /// Apply the standard gwyneth EVM configuration bundle (builder/stateless validation).
     pub fn configure_xchain_enforced(
         &mut self,
         parent_chain_id: Option<u64>,
         treasury_address: Option<revm::primitives::Address>,
         allowed_chain_ids: impl IntoIterator<Item = u64>,
     ) {
-        self.configure_common(parent_chain_id, treasury_address, true, allowed_chain_ids);
-    }
-
-    /// Apply the standard gwyneth EVM configuration bundle for tracking-only execution with
-    /// vanilla EVM semantics (`xchain_enabled=false`, no routing/interception).
-    pub fn configure_tracking_only_vanilla(
-        &mut self,
-        parent_chain_id: Option<u64>,
-        treasury_address: Option<revm::primitives::Address>,
-        allowed_chain_ids: impl IntoIterator<Item = u64>,
-    ) {
-        self.configure_common(parent_chain_id, treasury_address, false, allowed_chain_ids);
+        self.configure_common(parent_chain_id, treasury_address, allowed_chain_ids);
     }
 
     fn configure_common(
         &mut self,
         parent_chain_id: Option<u64>,
         treasury_address: Option<revm::primitives::Address>,
-        xchain_enabled: bool,
         allowed_chain_ids: impl IntoIterator<Item = u64>,
     ) {
         self.set_parent_chain_id(parent_chain_id);
         self.set_treasury_address(treasury_address);
-        self.set_xchain_enabled(xchain_enabled);
-        self.set_gwyneth_configured(true);
-        self.set_extension_oracle_configured(true);
 
         let mut allowed_chain_ids: alloc::vec::Vec<u64> = allowed_chain_ids.into_iter().collect();
         allowed_chain_ids.sort_unstable();
@@ -275,18 +235,11 @@ where
             return Ok(());
         }
 
-        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            self.inner.ctx.chain().is_xchain_enabled(),
-            self.inner.ctx.chain().parent_chain_id(),
-            self.inner.ctx.chain().gwyneth_configured(),
-            self.inner.ctx.chain().extension_oracle_configured(),
-        );
         let is_direct = self.inner.ctx.chain().parent_chain_id() == Some(origin_chain_id);
         let start_mode = gwyneth_types::ExecutionMode::from_context(
             origin_chain_id,
             self.inner.ctx.chain().parent_chain_id(),
             is_direct,
-            mode_tracking_enabled,
         );
 
         gwyneth_engine::apply_chain_state(
@@ -319,18 +272,11 @@ where
         // (db/cfg/journal/local) to the transaction's origin chain before any inspector hooks run.
         self.inner.ctx.local.clear();
 
-        let mode_tracking_enabled = gwyneth_types::ExecutionMode::tracking_enabled(
-            self.inner.ctx.chain().is_xchain_enabled(),
-            self.inner.ctx.chain().parent_chain_id(),
-            self.inner.ctx.chain().gwyneth_configured(),
-            self.inner.ctx.chain().extension_oracle_configured(),
-        );
         let is_direct = self.inner.ctx.chain().parent_chain_id() == Some(origin_chain_id);
         let start_mode = gwyneth_types::ExecutionMode::from_context(
             origin_chain_id,
             self.inner.ctx.chain().parent_chain_id(),
             is_direct,
-            mode_tracking_enabled,
         );
 
         // Reset per-tx tracking state so cross-chain diffs and forced-warm sets can't leak across
