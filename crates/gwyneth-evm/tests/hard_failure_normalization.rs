@@ -52,16 +52,15 @@ fn code_structural_violation(xcall_word: [u8; 32], bad_to: Address) -> Vec<u8> {
     code.extend(push_u8(0x00));
     code.push(0x52);
 
-    // CALL XCALLOPTIONS (sets intent)
-    code.extend(push_u8(0x04));
-    code.extend(push_u8(0x00));
-    code.extend(push_u8(0x1F));
-    code.extend(push_u8(0x00));
-    code.extend(push_u8(0x00));
-    code.extend(push_u16(0x04D2));
-    code.push(0x5A);
-    code.push(0xF1);
-    code.push(0x50);
+    // STATICCALL XCALLOPTIONS (sets intent).
+    code.extend(push_u8(0x00)); // out_size
+    code.extend(push_u8(0x00)); // out_offset
+    code.extend(push_u8(0x1F)); // in_size (31)
+    code.extend(push_u8(0x00)); // in_offset
+    code.extend(push_u16(0x04D2)); // to
+    code.push(0x5A); // GAS
+    code.push(0xFA); // STATICCALL
+    code.push(0x50); // POP (success)
 
     // Next CALL is not to EXTENSION_ORACLE -> hard failure.
     code.extend(push_u8(0x00)); // out_size
