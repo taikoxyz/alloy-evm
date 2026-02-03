@@ -149,14 +149,6 @@ where
         self.gwyneth_journal().clone()
     }
 
-    /// Drain callsite records captured by the always-on `JournalInspector`.
-    ///
-    /// This is a per-transaction buffer: `transact*` resets it before execution and callers
-    /// should drain it after the transaction completes.
-    pub fn take_callsite_records(&mut self) -> alloc::vec::Vec<gwyneth_types::recorder::CallsiteRecord> {
-        self.inner.ctx.local_mut().take_callsite_records()
-    }
-
     /// Get a reference to the underlying database.
     pub fn db(&self) -> &DB {
         self.inner.ctx.db()
