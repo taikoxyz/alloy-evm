@@ -360,15 +360,6 @@ where
         let trigger_chain_id = details.chain_id;
         let hard_failure = GwynethHardFailure::from_details(details, gas_used);
 
-        // Per-chain attribution: full gas to the trigger chain, 0 elsewhere.
-        let mut used = revm::primitives::HashMap::default();
-        used.insert(trigger_chain_id, gas_used);
-        gwyneth_engine::set_per_chain_gas(
-            &mut self.inner.ctx,
-            used,
-            revm::primitives::HashMap::default(),
-        );
-
         // Keep the journal's per-chain gas accounting consistent with the normalized surface.
         // Hard failures consume all gas and attribute it exclusively to the trigger chain.
         let journal = self.inner.ctx.chain_mut().gwyneth_journal_mut();
