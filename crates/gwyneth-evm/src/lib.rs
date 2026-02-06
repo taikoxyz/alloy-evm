@@ -24,8 +24,8 @@ use gwyneth_types::{
 };
 use gwyneth_detector::{DetectorConfig, GwynethDetector};
 use gwyneth_engine::{
-    GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal, GwynethPrecompileProvider,
-    HardFailureInspector, L2OverlayDb, TrackingJournal,
+    build_l2_overlay_db_adapter, GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal,
+    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -586,9 +586,13 @@ where
         block_env: BlockEnv,
         cfg_env: CfgEnv,
     ) -> Self {
-        let mut overlay = L2OverlayDb::new(gwyneth_types::L1_CHAIN_ID, l1_db);
-        overlay.add_l2_overlay(chain_id, l2_db);
-        let _ = overlay.switch_to_chain(chain_id);
+        let overlay = build_l2_overlay_db_adapter(
+            gwyneth_types::L1_CHAIN_ID,
+            l1_db,
+            [(chain_id, l2_db)],
+            chain_id,
+        )
+        .expect("create overlay db adapter");
         Self::from_env(
             overlay,
             EvmEnv { block_env, cfg_env },
@@ -656,9 +660,13 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
         L2DB::Error: Debug + Send + Sync + 'static,
         I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>,
     {
-        let mut overlay = L2OverlayDb::new(gwyneth_types::L1_CHAIN_ID, l1_db);
-        overlay.add_l2_overlay(chain_id, l2_db);
-        let _ = overlay.switch_to_chain(chain_id);
+        let overlay = build_l2_overlay_db_adapter(
+            gwyneth_types::L1_CHAIN_ID,
+            l1_db,
+            [(chain_id, l2_db)],
+            chain_id,
+        )
+        .expect("create overlay db adapter");
         GwynethRunner::from_env(
             overlay,
             env,

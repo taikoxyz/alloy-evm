@@ -115,8 +115,8 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
         code_structural_violation(xcalloptions_word(2, target, false), bad_to),
     );
 
-    let mut db = L2OverlayDb::new(1, l1);
-    db.add_l2_overlay(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
+    db.l2_overlays.insert(2, l2);
 
     let (block_env, cfg_env) = base_env();
 
@@ -187,8 +187,8 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
         code_structural_violation(xcalloptions_word(2, target, false), bad_to),
     );
 
-    let mut db = L2OverlayDb::new(1, l1);
-    db.add_l2_overlay(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
+    db.l2_overlays.insert(2, l2);
 
     let (block_env, cfg_env) = base_env();
 
@@ -257,8 +257,8 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
         code_structural_violation(xcalloptions_word(2, target, false), bad_to),
     );
 
-    let mut db = L2OverlayDb::new(1, l1);
-    db.add_l2_overlay(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
+    db.l2_overlays.insert(2, l2);
 
     let (block_env, cfg_env) = base_env();
 

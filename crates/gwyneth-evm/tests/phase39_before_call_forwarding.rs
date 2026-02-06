@@ -86,8 +86,8 @@ fn run_with_inspector<I>(
     insert_code(&mut l1, callee, vec![opcode::STOP]);
     insert_code(&mut l1, entry, code_internal_call(callee));
 
-    let mut db = L2OverlayDb::new(1, l1);
-    db.add_l2_overlay(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
+    db.l2_overlays.insert(2, l2);
 
     let (block_env, cfg_env) = base_env();
     let factory = GwynethEvmFactoryImpl::default();

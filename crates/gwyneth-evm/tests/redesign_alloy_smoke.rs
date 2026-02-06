@@ -24,8 +24,8 @@ fn redesign_alloy_smoke() {
     );
     let l2 = InMemoryDB::default();
 
-    let mut db = L2OverlayDb::new(1, l1);
-    db.add_l2_overlay(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
+    db.l2_overlays.insert(2, l2);
 
     let mut cfg_env = CfgEnv::default();
     cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
