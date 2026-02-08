@@ -8,16 +8,18 @@ extern crate alloc;
 use gwyneth_types as _;
 
 pub mod factory;
+pub mod fees;
 pub mod halt_reason;
 pub mod inspector;
 
 pub use factory::GwynethEvmFactoryImpl;
+pub use fees::{compute_multichain_fees, tx_fee_fields_from_tx, FeeError, MultichainFees, TxFeeFields};
 pub use halt_reason::GwynethHaltReason;
 pub use inspector::GwynethInspector;
 
 use alloc::string::String;
 use alloy_evm::{Database, Evm, EvmEnv};
-use alloy_primitives::Bytes;
+use alloy_primitives::{map::HashMap, Bytes};
 use core::fmt::Debug;
 use gwyneth_types::{
     normalize_superrevert, ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode,
@@ -57,6 +59,7 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
 pub struct GwynethRunner<DB: Database + gwyneth_types::ChainSwitchable, I> {
     inner: InnerEvm<DB, I>,
     surface: ExecutionSurface,
+    per_chain_basefee: HashMap<u64, u64>,
 }
 
 /// Convenience alias for the gwyneth execution runner.
@@ -108,7 +111,7 @@ where
             precompiles: GwynethPrecompileProvider::default(),
             frame_stack: Default::default(),
         };
-        Self { inner, surface }
+        Self { inner, surface, per_chain_basefee: HashMap::default() }
     }
 
     fn ctx(&self) -> &InnerContext<DB> {
@@ -187,6 +190,17 @@ where
         self.inner.ctx.chain_mut().set_allowed_chain_ids(allowed_chain_ids);
     }
 
+    /// Set the per-chain basefee source used by fee attribution.
+    pub fn set_per_chain_basefees(
+        &mut self,
+        per_chain_basefee: impl IntoIterator<Item = (u64, u64)>,
+    ) {
+        self.per_chain_basefee.clear();
+        for (chain_id, basefee) in per_chain_basefee {
+            self.per_chain_basefee.insert(chain_id, basefee);
+        }
+    }
+
     /// Apply the standard gwyneth EVM configuration bundle (builder/stateless validation).
     pub fn configure_xchain_enforced(
         &mut self,
@@ -209,6 +223,13 @@ where
         let mut allowed_chain_ids: alloc::vec::Vec<u64> = allowed_chain_ids.into_iter().collect();
         allowed_chain_ids.sort_unstable();
         self.set_allowed_chain_ids(allowed_chain_ids);
+
+        // Default source-of-truth for single-chain execution paths. Multi-chain builder/stateless
+        // paths must overwrite this map with per-chain values before execution.
+        self.set_per_chain_basefees([(
+            self.inner.ctx.cfg.chain_id,
+            self.inner.ctx.block.basefee,
+        )]);
     }
 
 }
@@ -355,6 +376,101 @@ where
         Ok(())
     }
 
+    fn apply_multichain_fee_surface_to_balance_deltas(
+        &mut self,
+        origin_chain_id: u64,
+        gas_used: u64,
+        desired_total_fee: revm::primitives::U256,
+        desired_total_tip: revm::primitives::U256,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        use revm::context_interface::{Block as _, Cfg as _, Transaction as _};
+
+        self.ensure_origin_chain_alignment(
+            origin_chain_id,
+            "apply_multichain_fee_surface_to_balance_deltas",
+        )?;
+
+        let basefee = self.inner.ctx.block().basefee() as u128;
+        let effective_gas_price = self.inner.ctx.tx().effective_gas_price(basefee);
+        let spec_id: SpecId = self.inner.ctx.cfg().spec().into();
+        let actual_tip_per_gas = if spec_id.is_enabled_in(SpecId::LONDON) {
+            effective_gas_price.checked_sub(basefee).ok_or_else(|| {
+                EVMError::Custom(alloc::format!(
+                    "multichain fee normalization invalid gas price surface: effective_gas_price={effective_gas_price} basefee={basefee}"
+                ))
+            })?
+        } else {
+            effective_gas_price
+        };
+
+        let gas_used_u256 = revm::primitives::U256::from(gas_used);
+        let actual_total_fee = revm::primitives::U256::from(effective_gas_price)
+            .checked_mul(gas_used_u256)
+            .ok_or_else(|| {
+                EVMError::Custom(alloc::format!(
+                    "multichain fee normalization overflow: actual_total_fee (effective_gas_price={effective_gas_price}, gas_used={gas_used})"
+                ))
+            })?;
+        let actual_total_tip = revm::primitives::U256::from(actual_tip_per_gas)
+            .checked_mul(gas_used_u256)
+            .ok_or_else(|| {
+                EVMError::Custom(alloc::format!(
+                    "multichain fee normalization overflow: actual_total_tip (actual_tip_per_gas={actual_tip_per_gas}, gas_used={gas_used})"
+                ))
+            })?;
+
+        let caller = self.inner.ctx.tx().caller();
+        let beneficiary = self.inner.ctx.block().beneficiary();
+
+        if desired_total_fee > actual_total_fee {
+            let delta = desired_total_fee - actual_total_fee;
+            let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
+            if !caller_account.decr_balance(delta) {
+                return Err(EVMError::Custom(alloc::format!(
+                    "multichain fee normalization underflow while charging caller: delta={delta}"
+                )));
+            }
+        } else if actual_total_fee > desired_total_fee {
+            let delta = actual_total_fee - desired_total_fee;
+            let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
+            if !caller_account.incr_balance(delta) {
+                return Err(EVMError::Custom(alloc::format!(
+                    "multichain fee normalization overflow while refunding caller: delta={delta}"
+                )));
+            }
+        }
+
+        if desired_total_tip > actual_total_tip {
+            let delta = desired_total_tip - actual_total_tip;
+            let mut beneficiary_account = self
+                .inner
+                .ctx
+                .journal_mut()
+                .load_account_mut(beneficiary)?
+                .data;
+            if !beneficiary_account.incr_balance(delta) {
+                return Err(EVMError::Custom(alloc::format!(
+                    "multichain fee normalization overflow while crediting beneficiary: delta={delta}"
+                )));
+            }
+        } else if actual_total_tip > desired_total_tip {
+            let delta = actual_total_tip - desired_total_tip;
+            let mut beneficiary_account = self
+                .inner
+                .ctx
+                .journal_mut()
+                .load_account_mut(beneficiary)?
+                .data;
+            if !beneficiary_account.decr_balance(delta) {
+                return Err(EVMError::Custom(alloc::format!(
+                    "multichain fee normalization underflow while debiting beneficiary: delta={delta}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     fn take_hard_failure(&mut self, gas_used: u64) -> Option<(u64, GwynethHardFailure)> {
         let details = self.inner.inspector.take_hard_failure_details()?;
         let trigger_chain_id = details.chain_id;
@@ -374,7 +490,8 @@ where
         origin_chain_id: u64,
         gas_used: u64,
     ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
-        // Phase 22.3: treasury forwarding of the basefee-burn component.
+        // Phase 60.8: fee attribution and treasury forwarding use per-chain charged gas/basefee
+        // surfaces and fail closed on invalid/missing fee inputs.
         //
         // Must not run on simulation-only surfaces and must not run for system calls (explicitly fee-free).
         if self.surface != ExecutionSurface::TxSubmission {
@@ -390,9 +507,63 @@ where
             return Ok(());
         };
 
+        let mut gas_used_per_chain =
+            self.inner.ctx.chain().gwyneth_journal().gas_used_per_chain.clone();
+        let tracked_total = gas_used_per_chain.values().try_fold(0u64, |acc, &value| {
+            acc.checked_add(value).ok_or_else(|| {
+                EVMError::Custom(alloc::format!(
+                    "multichain fee attribution overflow while summing per-chain gas: acc={acc} value={value}"
+                ))
+            })
+        })?;
+        if tracked_total < gas_used {
+            let remainder = gas_used - tracked_total;
+            let origin_prev = gas_used_per_chain.get(&origin_chain_id).copied().unwrap_or(0);
+            let origin_next = origin_prev.checked_add(remainder).ok_or_else(|| {
+                EVMError::Custom(alloc::format!(
+                    "multichain fee attribution overflow while assigning origin-chain gas remainder: origin_prev={origin_prev} remainder={remainder}"
+                ))
+            })?;
+            gas_used_per_chain.insert(origin_chain_id, origin_next);
+        } else if tracked_total > gas_used {
+            // The execution result gas surface is post-refund while internal per-chain tracking
+            // can still carry a higher metered total. Normalize the refund delta on the origin
+            // chain, which is the single settlement surface for fee accounting.
+            let refund_delta = tracked_total - gas_used;
+            let origin_prev = gas_used_per_chain.get(&origin_chain_id).copied().unwrap_or(0);
+            let origin_next = origin_prev.checked_sub(refund_delta).ok_or_else(|| {
+                EVMError::Custom(alloc::format!(
+                    "multichain fee attribution cannot apply refund delta to origin chain: origin_prev={origin_prev} refund_delta={refund_delta} tracked_total={tracked_total} execution_result_gas={gas_used}"
+                ))
+            })?;
+            gas_used_per_chain.insert(origin_chain_id, origin_next);
+        }
+
+        let tx_fee_fields = tx_fee_fields_from_tx(tx).map_err(|err| {
+            EVMError::Custom(alloc::format!(
+                "multichain fee attribution rejected tx fee fields (tx_type={}): {err:?}",
+                tx.tx_type
+            ))
+        })?;
+        let fees = compute_multichain_fees(&gas_used_per_chain, &self.per_chain_basefee, tx_fee_fields)
+            .map_err(|err| EVMError::Custom(alloc::format!("multichain fee attribution failed: {err:?}")))?;
+
+        if fees.gas_used_total != gas_used {
+            return Err(EVMError::Custom(alloc::format!(
+                "multichain fee attribution gas mismatch: per_chain_total={} execution_result_gas={gas_used}",
+                fees.gas_used_total
+            )));
+        }
+
+        self.apply_multichain_fee_surface_to_balance_deltas(
+            origin_chain_id,
+            gas_used,
+            fees.total_fee,
+            fees.total_tip,
+        )?;
+
         let origin_basefee = self.inner.ctx.block().basefee();
-        let basefee_burn =
-            revm::primitives::U256::from(origin_basefee) * revm::primitives::U256::from(gas_used);
+        let basefee_burn = fees.total_basefee_burn;
 
         let mode = match self.inner.ctx.chain().parent_chain_id() {
             Some(parent) if parent == origin_chain_id => TreasuryForwardingMode::ExposeToHost,
@@ -403,7 +574,7 @@ where
             origin_chain_id,
             treasury_address,
             origin_basefee,
-            gas_used,
+            gas_used: fees.gas_used_total,
             basefee_burn,
             mode,
         });
