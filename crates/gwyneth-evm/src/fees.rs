@@ -79,10 +79,17 @@ pub fn compute_multichain_fees(
     let mut total_tip = U256::ZERO;
     let mut gas_used_total = 0u64;
 
-    for (&chain_id, &gas_used) in gas_used_per_chain {
-        if gas_used == 0 {
-            continue;
-        }
+    // Keep charged-chain diagnostics deterministic regardless of HashMap insertion order.
+    let mut charged_chain_ids: Vec<u64> = gas_used_per_chain
+        .iter()
+        .filter_map(|(&chain_id, &gas_used)| (gas_used > 0).then_some(chain_id))
+        .collect();
+    charged_chain_ids.sort_unstable();
+
+    for chain_id in charged_chain_ids {
+        let Some(&gas_used) = gas_used_per_chain.get(&chain_id) else {
+            return Err(FeeError::ArithmeticOverflow("charged_chain_ids missing key"));
+        };
 
         let Some(&basefee) = per_chain_basefee.get(&chain_id) else {
             return Err(FeeError::MissingBasefee { chain_id, gas_used });
@@ -234,6 +241,63 @@ mod tests {
         assert_eq!(
             invalid,
             FeeError::BasefeeExceedsMaxFee { chain_id: 1, basefee: 31, max_fee_per_gas: 30 }
+        );
+    }
+
+    #[test]
+    fn phase62_3_charged_chain_insertion_order_deterministic_errors() {
+        let tx_fee_fields = TxFeeFields { max_fee_per_gas: 30, max_priority_fee_per_gas: 10 };
+
+        let insertion_orders = [
+            vec![(7u64, 1u64), (3u64, 1u64), (5u64, 1u64)],
+            vec![(5u64, 1u64), (7u64, 1u64), (3u64, 1u64)],
+            vec![(3u64, 1u64), (5u64, 1u64), (7u64, 1u64)],
+        ];
+
+        let mut first_missing_basefee: Option<FeeError> = None;
+        for order in &insertion_orders {
+            let gas_used_per_chain = HashMap::from_iter(order.iter().copied());
+            let err = compute_multichain_fees(
+                &gas_used_per_chain,
+                &HashMap::from_iter([(5u64, 10u64)]),
+                tx_fee_fields,
+            )
+            .expect_err("missing basefee must fail deterministically");
+
+            if let Some(expected) = &first_missing_basefee {
+                assert_eq!(&err, expected, "missing-basefee error drifted across insertion orders");
+            } else {
+                first_missing_basefee = Some(err.clone());
+            }
+        }
+        assert_eq!(
+            first_missing_basefee,
+            Some(FeeError::MissingBasefee { chain_id: 3, gas_used: 1 })
+        );
+
+        let mut first_max_fee_error: Option<FeeError> = None;
+        for order in &insertion_orders {
+            let gas_used_per_chain = HashMap::from_iter(order.iter().copied());
+            let err = compute_multichain_fees(
+                &gas_used_per_chain,
+                &HashMap::from_iter([(3u64, 31u64), (5u64, 10u64), (7u64, 32u64)]),
+                tx_fee_fields,
+            )
+            .expect_err("basefee > max fee must fail deterministically");
+
+            if let Some(expected) = &first_max_fee_error {
+                assert_eq!(&err, expected, "max-fee error drifted across insertion orders");
+            } else {
+                first_max_fee_error = Some(err.clone());
+            }
+        }
+        assert_eq!(
+            first_max_fee_error,
+            Some(FeeError::BasefeeExceedsMaxFee {
+                chain_id: 3,
+                basefee: 31,
+                max_fee_per_gas: 30,
+            })
         );
     }
 }

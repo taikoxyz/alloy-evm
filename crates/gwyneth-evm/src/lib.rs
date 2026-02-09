@@ -354,10 +354,11 @@ where
 
         {
             let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
-            debug_assert!(
-                caller_account.decr_balance(missing_fee),
-                "SuperRevert fee normalization underflow"
-            );
+            if !caller_account.decr_balance(missing_fee) {
+                return Err(EVMError::Custom(alloc::format!(
+                    "superrevert fee normalization underflow while charging caller: missing_fee={missing_fee}"
+                )));
+            }
         }
 
         if !missing_beneficiary_fee.is_zero() {
@@ -367,10 +368,11 @@ where
                 .journal_mut()
                 .load_account_mut(beneficiary)?
                 .data;
-            debug_assert!(
-                beneficiary_account.incr_balance(missing_beneficiary_fee),
-                "SuperRevert fee normalization beneficiary overflow"
-            );
+            if !beneficiary_account.incr_balance(missing_beneficiary_fee) {
+                return Err(EVMError::Custom(alloc::format!(
+                    "superrevert fee normalization overflow while crediting beneficiary: missing_beneficiary_fee={missing_beneficiary_fee}"
+                )));
+            }
         }
 
         Ok(())
