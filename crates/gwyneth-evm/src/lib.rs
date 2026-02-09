@@ -24,7 +24,7 @@ use core::fmt::Debug;
 use gwyneth_types::{
     normalize_superrevert, ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode,
 };
-use gwyneth_detector::{DetectorConfig, GwynethDetector};
+use gwyneth_detector::DetectorConfig;
 use gwyneth_engine::{
     build_l2_overlay_db_adapter, GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal,
     GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
@@ -98,7 +98,7 @@ where
                 .with_cfg(cfg_env)
                 .with_block(block_env);
         let mut gwyneth_ctx = base
-            .with_chain(GwynethChain::with_detector(GwynethDetector::new(detector_config)))
+            .with_chain(GwynethChain::default())
             .with_local(GwynethLocal::default());
         gwyneth_ctx
             .chain_mut()
