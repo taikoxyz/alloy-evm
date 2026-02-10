@@ -151,32 +151,24 @@ mod tests {
 
     #[test]
     fn tx_fee_fields_mapping_is_locked_by_tx_type() {
-        let legacy = tx_fee_fields_from_tx(&tx_env(TransactionType::Legacy as u8, 21, None))
-            .expect("legacy mapping");
         assert_eq!(
-            legacy,
-            TxFeeFields { max_fee_per_gas: 21, max_priority_fee_per_gas: 21 }
+            tx_fee_fields_from_tx(&tx_env(TransactionType::Legacy as u8, 21, None)),
+            Ok(TxFeeFields { max_fee_per_gas: 21, max_priority_fee_per_gas: 21 })
         );
 
-        let eip2930 = tx_fee_fields_from_tx(&tx_env(TransactionType::Eip2930 as u8, 22, None))
-            .expect("eip2930 mapping");
         assert_eq!(
-            eip2930,
-            TxFeeFields { max_fee_per_gas: 22, max_priority_fee_per_gas: 22 }
+            tx_fee_fields_from_tx(&tx_env(TransactionType::Eip2930 as u8, 22, None)),
+            Ok(TxFeeFields { max_fee_per_gas: 22, max_priority_fee_per_gas: 22 })
         );
 
-        let eip1559 = tx_fee_fields_from_tx(&tx_env(TransactionType::Eip1559 as u8, 100, Some(3)))
-            .expect("eip1559 mapping");
         assert_eq!(
-            eip1559,
-            TxFeeFields { max_fee_per_gas: 100, max_priority_fee_per_gas: 3 }
+            tx_fee_fields_from_tx(&tx_env(TransactionType::Eip1559 as u8, 100, Some(3))),
+            Ok(TxFeeFields { max_fee_per_gas: 100, max_priority_fee_per_gas: 3 })
         );
 
-        let eip4844 = tx_fee_fields_from_tx(&tx_env(TransactionType::Eip4844 as u8, 120, Some(5)))
-            .expect("eip4844 mapping");
         assert_eq!(
-            eip4844,
-            TxFeeFields { max_fee_per_gas: 120, max_priority_fee_per_gas: 5 }
+            tx_fee_fields_from_tx(&tx_env(TransactionType::Eip4844 as u8, 120, Some(5))),
+            Ok(TxFeeFields { max_fee_per_gas: 120, max_priority_fee_per_gas: 5 })
         );
     }
 
@@ -210,7 +202,7 @@ mod tests {
         let tx_fee_fields = TxFeeFields { max_fee_per_gas: 50, max_priority_fee_per_gas: 15 };
 
         let fees = compute_multichain_fees(&gas_used_per_chain, &per_chain_basefee, tx_fee_fields)
-            .expect("sigma fees");
+            .unwrap_or_else(|err| panic!("sigma fees mapping failed: {err:?}"));
 
         // chain 1: basefee=10, tip=min(15, 40)=15, gas=100
         // chain 2: basefee=20, tip=min(15, 30)=15, gas=50

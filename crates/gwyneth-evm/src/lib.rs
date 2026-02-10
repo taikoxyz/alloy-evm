@@ -40,7 +40,7 @@ use revm::{
     handler::{instructions::EthInstructions, EthFrame},
     InspectEvm, InspectSystemCallEvm, Inspector,
     interpreter::interpreter::EthInterpreter,
-    primitives::hardfork::SpecId,
+    primitives::{hardfork::SpecId, U256},
 };
 
 type InnerContext<DB> = GwynethContext<DB, TrackingJournal<DB>>;
@@ -52,6 +52,65 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
     GwynethPrecompileProvider,
     EthFrame<EthInterpreter>,
 >;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GwynethRunnerInitError {
+    OverlayDbAdapterInit { chain_id: u64, reason: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeeSurfaceMathError {
+    CoinbaseGasPriceUnderflow,
+    SuperrevertFeeOverflow,
+    ActualTotalFeeOverflow,
+    ActualTotalTipOverflow,
+}
+
+fn checked_coinbase_gas_price(
+    effective_gas_price: u128,
+    basefee: u128,
+    london_enabled: bool,
+) -> Result<u128, FeeSurfaceMathError> {
+    if london_enabled {
+        effective_gas_price
+            .checked_sub(basefee)
+            .ok_or(FeeSurfaceMathError::CoinbaseGasPriceUnderflow)
+    } else {
+        Ok(effective_gas_price)
+    }
+}
+
+fn checked_fee_amount(
+    gas_price: u128,
+    gas_used: u64,
+    overflow_error: FeeSurfaceMathError,
+) -> Result<U256, FeeSurfaceMathError> {
+    let amount = gas_price
+        .checked_mul(u128::from(gas_used))
+        .ok_or(overflow_error)?;
+    Ok(U256::from(amount))
+}
+
+fn compute_superrevert_fee_amounts(
+    effective_gas_price: u128,
+    basefee: u128,
+    missing_gas: u64,
+    london_enabled: bool,
+) -> Result<(U256, U256), FeeSurfaceMathError> {
+    let coinbase_gas_price =
+        checked_coinbase_gas_price(effective_gas_price, basefee, london_enabled)?;
+    let missing_fee = checked_fee_amount(
+        effective_gas_price,
+        missing_gas,
+        FeeSurfaceMathError::SuperrevertFeeOverflow,
+    )?;
+    let missing_beneficiary_fee = checked_fee_amount(
+        coinbase_gas_price,
+        missing_gas,
+        FeeSurfaceMathError::SuperrevertFeeOverflow,
+    )?;
+    Ok((missing_fee, missing_beneficiary_fee))
+}
 
 /// Gwyneth-flavoured EVM implementation that wraps the REVM context backed by the
 /// Gwyneth tracking journal and precompile set.
@@ -314,6 +373,38 @@ where
         Ok(())
     }
 
+    fn debit_balance_checked(
+        &mut self,
+        account: revm::primitives::Address,
+        amount: U256,
+        context: &'static str,
+        value_label: &'static str,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        let mut account_data = self.inner.ctx.journal_mut().load_account_mut(account)?.data;
+        if !account_data.decr_balance(amount) {
+            return Err(EVMError::Custom(alloc::format!(
+                "{context}: {value_label}={amount}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn credit_balance_checked(
+        &mut self,
+        account: revm::primitives::Address,
+        amount: U256,
+        context: &'static str,
+        value_label: &'static str,
+    ) -> Result<(), EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        let mut account_data = self.inner.ctx.journal_mut().load_account_mut(account)?.data;
+        if !account_data.incr_balance(amount) {
+            return Err(EVMError::Custom(alloc::format!(
+                "{context}: {value_label}={amount}"
+            )));
+        }
+        Ok(())
+    }
+
     fn apply_superrevert_fee_surface_to_balance_deltas(
         &mut self,
         origin_chain_id: u64,
@@ -338,41 +429,42 @@ where
         let effective_gas_price = self.inner.ctx.tx().effective_gas_price(basefee);
 
         let spec_id: SpecId = self.inner.ctx.cfg().spec().into();
-        let coinbase_gas_price = if spec_id.is_enabled_in(SpecId::LONDON) {
-            effective_gas_price.saturating_sub(basefee)
-        } else {
-            effective_gas_price
-        };
-
-        let missing_fee =
-            revm::primitives::U256::from(effective_gas_price.saturating_mul(missing_gas as u128));
-        let missing_beneficiary_fee =
-            revm::primitives::U256::from(coinbase_gas_price.saturating_mul(missing_gas as u128));
+        let london_enabled = spec_id.is_enabled_in(SpecId::LONDON);
+        let (missing_fee, missing_beneficiary_fee) = compute_superrevert_fee_amounts(
+            effective_gas_price,
+            basefee,
+            missing_gas,
+            london_enabled,
+        )
+        .map_err(|err| match err {
+            FeeSurfaceMathError::CoinbaseGasPriceUnderflow => EVMError::Custom(alloc::format!(
+                "superrevert fee normalization invalid gas price surface: effective_gas_price={effective_gas_price} basefee={basefee}"
+            )),
+            FeeSurfaceMathError::SuperrevertFeeOverflow => EVMError::Custom(alloc::format!(
+                "superrevert fee normalization overflow: missing fee surface (effective_gas_price={effective_gas_price}, basefee={basefee}, missing_gas={missing_gas})"
+            )),
+            FeeSurfaceMathError::ActualTotalFeeOverflow
+            | FeeSurfaceMathError::ActualTotalTipOverflow => EVMError::Custom(alloc::format!(
+                "superrevert fee normalization arithmetic invariant violation: {err:?}"
+            )),
+        })?;
 
         let caller = self.inner.ctx.tx().caller();
         let beneficiary = self.inner.ctx.block().beneficiary();
-
-        {
-            let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
-            if !caller_account.decr_balance(missing_fee) {
-                return Err(EVMError::Custom(alloc::format!(
-                    "superrevert fee normalization underflow while charging caller: missing_fee={missing_fee}"
-                )));
-            }
-        }
+        self.debit_balance_checked(
+            caller,
+            missing_fee,
+            "superrevert fee normalization underflow while charging caller",
+            "missing_fee",
+        )?;
 
         if !missing_beneficiary_fee.is_zero() {
-            let mut beneficiary_account = self
-                .inner
-                .ctx
-                .journal_mut()
-                .load_account_mut(beneficiary)?
-                .data;
-            if !beneficiary_account.incr_balance(missing_beneficiary_fee) {
-                return Err(EVMError::Custom(alloc::format!(
-                    "superrevert fee normalization overflow while crediting beneficiary: missing_beneficiary_fee={missing_beneficiary_fee}"
-                )));
-            }
+            self.credit_balance_checked(
+                beneficiary,
+                missing_beneficiary_fee,
+                "superrevert fee normalization overflow while crediting beneficiary",
+                "missing_beneficiary_fee",
+            )?;
         }
 
         Ok(())
@@ -395,79 +487,74 @@ where
         let basefee = self.inner.ctx.block().basefee() as u128;
         let effective_gas_price = self.inner.ctx.tx().effective_gas_price(basefee);
         let spec_id: SpecId = self.inner.ctx.cfg().spec().into();
-        let actual_tip_per_gas = if spec_id.is_enabled_in(SpecId::LONDON) {
-            effective_gas_price.checked_sub(basefee).ok_or_else(|| {
-                EVMError::Custom(alloc::format!(
-                    "multichain fee normalization invalid gas price surface: effective_gas_price={effective_gas_price} basefee={basefee}"
-                ))
-            })?
-        } else {
-            effective_gas_price
-        };
-
-        let gas_used_u256 = revm::primitives::U256::from(gas_used);
-        let actual_total_fee = revm::primitives::U256::from(effective_gas_price)
-            .checked_mul(gas_used_u256)
-            .ok_or_else(|| {
-                EVMError::Custom(alloc::format!(
-                    "multichain fee normalization overflow: actual_total_fee (effective_gas_price={effective_gas_price}, gas_used={gas_used})"
-                ))
-            })?;
-        let actual_total_tip = revm::primitives::U256::from(actual_tip_per_gas)
-            .checked_mul(gas_used_u256)
-            .ok_or_else(|| {
-                EVMError::Custom(alloc::format!(
-                    "multichain fee normalization overflow: actual_total_tip (actual_tip_per_gas={actual_tip_per_gas}, gas_used={gas_used})"
-                ))
-            })?;
+        let actual_tip_per_gas = checked_coinbase_gas_price(
+            effective_gas_price,
+            basefee,
+            spec_id.is_enabled_in(SpecId::LONDON),
+        )
+        .map_err(|_| {
+            EVMError::Custom(alloc::format!(
+                "multichain fee normalization invalid gas price surface: effective_gas_price={effective_gas_price} basefee={basefee}"
+            ))
+        })?;
+        let actual_total_fee = checked_fee_amount(
+            effective_gas_price,
+            gas_used,
+            FeeSurfaceMathError::ActualTotalFeeOverflow,
+        )
+        .map_err(|_| {
+            EVMError::Custom(alloc::format!(
+                "multichain fee normalization overflow: actual_total_fee (effective_gas_price={effective_gas_price}, gas_used={gas_used})"
+            ))
+        })?;
+        let actual_total_tip = checked_fee_amount(
+            actual_tip_per_gas,
+            gas_used,
+            FeeSurfaceMathError::ActualTotalTipOverflow,
+        )
+        .map_err(|_| {
+            EVMError::Custom(alloc::format!(
+                "multichain fee normalization overflow: actual_total_tip (actual_tip_per_gas={actual_tip_per_gas}, gas_used={gas_used})"
+            ))
+        })?;
 
         let caller = self.inner.ctx.tx().caller();
         let beneficiary = self.inner.ctx.block().beneficiary();
 
         if desired_total_fee > actual_total_fee {
             let delta = desired_total_fee - actual_total_fee;
-            let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
-            if !caller_account.decr_balance(delta) {
-                return Err(EVMError::Custom(alloc::format!(
-                    "multichain fee normalization underflow while charging caller: delta={delta}"
-                )));
-            }
+            self.debit_balance_checked(
+                caller,
+                delta,
+                "multichain fee normalization underflow while charging caller",
+                "delta",
+            )?;
         } else if actual_total_fee > desired_total_fee {
             let delta = actual_total_fee - desired_total_fee;
-            let mut caller_account = self.inner.ctx.journal_mut().load_account_mut(caller)?.data;
-            if !caller_account.incr_balance(delta) {
-                return Err(EVMError::Custom(alloc::format!(
-                    "multichain fee normalization overflow while refunding caller: delta={delta}"
-                )));
-            }
+            self.credit_balance_checked(
+                caller,
+                delta,
+                "multichain fee normalization overflow while refunding caller",
+                "delta",
+            )?;
         }
 
         if desired_total_tip > actual_total_tip {
             let delta = desired_total_tip - actual_total_tip;
-            let mut beneficiary_account = self
-                .inner
-                .ctx
-                .journal_mut()
-                .load_account_mut(beneficiary)?
-                .data;
-            if !beneficiary_account.incr_balance(delta) {
-                return Err(EVMError::Custom(alloc::format!(
-                    "multichain fee normalization overflow while crediting beneficiary: delta={delta}"
-                )));
-            }
+            self.credit_balance_checked(
+                beneficiary,
+                delta,
+                "multichain fee normalization overflow while crediting beneficiary",
+                "delta",
+            )?;
         } else if actual_total_tip > desired_total_tip {
             let delta = actual_total_tip - desired_total_tip;
-            let mut beneficiary_account = self
-                .inner
-                .ctx
-                .journal_mut()
-                .load_account_mut(beneficiary)?
-                .data;
-            if !beneficiary_account.decr_balance(delta) {
-                return Err(EVMError::Custom(alloc::format!(
-                    "multichain fee normalization underflow while debiting beneficiary: delta={delta}"
-                )));
-            }
+            self.debit_balance_checked(
+                beneficiary,
+                delta,
+                "multichain fee normalization underflow while debiting beneficiary",
+                "delta",
+            )?;
         }
 
         Ok(())
@@ -758,22 +845,22 @@ where
         inspector: I,
         block_env: BlockEnv,
         cfg_env: CfgEnv,
-    ) -> Self {
+    ) -> Result<Self, GwynethRunnerInitError> {
         let overlay = build_l2_overlay_db_adapter(
             gwyneth_types::L1_CHAIN_ID,
             l1_db,
             [(chain_id, l2_db)],
             chain_id,
         )
-        .expect("create overlay db adapter");
-        Self::from_env(
+        .map_err(|reason| GwynethRunnerInitError::OverlayDbAdapterInit { chain_id, reason })?;
+        Ok(Self::from_env(
             overlay,
             EvmEnv { block_env, cfg_env },
             inspector,
             DetectorConfig::default(),
             ExecutionSurface::TxSubmission,
             true,
-        )
+        ))
     }
 
     /// Switch the active overlay chain.
@@ -808,7 +895,7 @@ pub trait GwynethEvmExt {
         chain_id: u64,
         env: EvmEnv<SpecId>,
         inspector: I,
-    ) -> GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>
+    ) -> Result<GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>, GwynethRunnerInitError>
     where
         L1DB: revm::Database + Debug,
         L2DB: revm::Database + Debug,
@@ -825,7 +912,7 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
         chain_id: u64,
         env: EvmEnv<SpecId>,
         inspector: I,
-    ) -> GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>
+    ) -> Result<GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>, GwynethRunnerInitError>
     where
         L1DB: revm::Database + Debug,
         L2DB: revm::Database + Debug,
@@ -839,14 +926,33 @@ impl GwynethEvmExt for GwynethEvmFactoryImpl {
             [(chain_id, l2_db)],
             chain_id,
         )
-        .expect("create overlay db adapter");
-        GwynethRunner::from_env(
+        .map_err(|reason| GwynethRunnerInitError::OverlayDbAdapterInit { chain_id, reason })?;
+        Ok(GwynethRunner::from_env(
             overlay,
             env,
             inspector,
             self.detector_config.clone(),
             ExecutionSurface::TxSubmission,
             true,
-        )
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compute_superrevert_fee_amounts, FeeSurfaceMathError};
+
+    #[test]
+    fn phase64_4b_superrevert_overflow_is_typed_fail_closed() {
+        let err = compute_superrevert_fee_amounts(u128::MAX, 0, 2, true)
+            .expect_err("overflow must fail closed");
+        assert_eq!(err, FeeSurfaceMathError::SuperrevertFeeOverflow);
+    }
+
+    #[test]
+    fn phase64_4b_superrevert_coinbase_underflow_is_typed_fail_closed() {
+        let err = compute_superrevert_fee_amounts(10, 11, 1, true)
+            .expect_err("coinbase underflow must fail closed");
+        assert_eq!(err, FeeSurfaceMathError::CoinbaseGasPriceUnderflow);
     }
 }
