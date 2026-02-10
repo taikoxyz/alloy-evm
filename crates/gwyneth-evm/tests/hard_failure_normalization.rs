@@ -4,6 +4,7 @@ use alloy_evm::evm::BoundedEvmFactory as _;
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactoryImpl, GwynethHaltReason};
 use gwyneth_engine::{HardFailureCode, L2OverlayDb};
+use gwyneth_phase64_shared_dev::{code_structural_violation, xcalloptions_word};
 use gwyneth_types::ExecutionSurface;
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
@@ -12,70 +13,6 @@ use revm::{
     primitives::{Address, Bytes, TxKind, U256},
     state::{AccountInfo, Bytecode},
 };
-
-fn push_bytes(bytes: &[u8]) -> Vec<u8> {
-    assert!(!bytes.is_empty());
-    assert!(bytes.len() <= 32);
-    let opcode = 0x5f_u8 + (bytes.len() as u8);
-    let mut out = Vec::with_capacity(1 + bytes.len());
-    out.push(opcode);
-    out.extend_from_slice(bytes);
-    out
-}
-
-fn push_u8(value: u8) -> Vec<u8> {
-    push_bytes(&[value])
-}
-
-fn push_u16(value: u16) -> Vec<u8> {
-    push_bytes(&value.to_be_bytes())
-}
-
-fn push_address(addr: Address) -> Vec<u8> {
-    push_bytes(&addr.0[..])
-}
-
-fn xcalloptions_word(target_chain_id: u64, target: Address, direct: bool) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[0..2].copy_from_slice(&1u16.to_be_bytes());
-    out[2..10].copy_from_slice(&target_chain_id.to_be_bytes());
-    out[10..30].copy_from_slice(&target.0[..]);
-    out[30] = if direct { 1 } else { 0 };
-    out
-}
-
-fn code_structural_violation(xcall_word: [u8; 32], bad_to: Address) -> Vec<u8> {
-    let mut code = Vec::new();
-
-    // mstore(0, xcall_word)
-    code.extend(push_bytes(&xcall_word));
-    code.extend(push_u8(0x00));
-    code.push(0x52);
-
-    // STATICCALL XCALLOPTIONS (sets intent).
-    code.extend(push_u8(0x00)); // out_size
-    code.extend(push_u8(0x00)); // out_offset
-    code.extend(push_u8(0x1F)); // in_size (31)
-    code.extend(push_u8(0x00)); // in_offset
-    code.extend(push_u16(0x04D2)); // to
-    code.push(0x5A); // GAS
-    code.push(0xFA); // STATICCALL
-    code.push(0x50); // POP (success)
-
-    // Next CALL is not to EXTENSION_ORACLE -> hard failure.
-    code.extend(push_u8(0x00)); // out_size
-    code.extend(push_u8(0x00)); // out_offset
-    code.extend(push_u8(0x00)); // in_size
-    code.extend(push_u8(0x00)); // in_offset
-    code.extend(push_u8(0x00)); // value
-    code.extend(push_address(bad_to));
-    code.push(0x5A);
-    code.push(0xF1);
-
-    // (unreachable)
-    code.push(0x00);
-    code
-}
 
 fn insert_code(db: &mut InMemoryDB, addr: Address, code: Vec<u8>) {
     let info = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from(code)));

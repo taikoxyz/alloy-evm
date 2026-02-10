@@ -26,6 +26,7 @@ gwyneth-types = { path = "../../../revm-private/revm-private/gwyneth/crates/gwyn
 
 [dev-dependencies]
 either = "1.15.0"
+gwyneth-phase64-shared-dev = { path = "../../../gwyneth-private/gwyneth-private/testing/phase64-shared-dev-crate" }
 
 [features]
 default = ["std"]
