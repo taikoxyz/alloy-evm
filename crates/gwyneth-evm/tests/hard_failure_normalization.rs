@@ -11,33 +11,10 @@ use gwyneth_phase64_shared_dev::{
 };
 use gwyneth_types::ExecutionSurface;
 use revm::{
-    context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
-    database::InMemoryDB,
     context_interface::result::ExecutionResult,
-    primitives::{Address, Bytes, TxKind, U256},
-    state::{AccountInfo, Bytecode},
+    database::InMemoryDB,
+    primitives::{Address, Bytes, U256},
 };
-
-fn insert_code(db: &mut InMemoryDB, addr: Address, code: Vec<u8>) {
-    let info = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from(code)));
-    db.insert_account_info(addr, info);
-}
-
-fn insert_eoa(db: &mut InMemoryDB, addr: Address) {
-    let info = AccountInfo::default().with_balance(U256::from(HARD_FAILURE_CALLER_BALANCE));
-    db.insert_account_info(addr, info);
-}
-
-fn base_env(beneficiary: Address) -> (BlockEnv, CfgEnv) {
-    let mut cfg_env = CfgEnv::default();
-    cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
-    cfg_env.chain_id = HARD_FAILURE_CHAIN_IDS[0];
-
-    let mut block_env = BlockEnv::default();
-    block_env.beneficiary = beneficiary;
-    block_env.gas_limit = HARD_FAILURE_BLOCK_GAS_LIMIT;
-    (block_env, cfg_env)
-}
 
 #[test]
 fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
@@ -49,34 +26,47 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
 
-    insert_eoa(&mut l1, caller);
-    insert_code(
-        &mut l1,
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_eoa!(
+        l1,
+        caller,
+        HARD_FAILURE_CALLER_BALANCE
+    );
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_code!(
+        l1,
         entry,
         code_structural_violation(xcalloptions_word(HARD_FAILURE_CHAIN_IDS[1], target, false), bad_to),
     );
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(HARD_FAILURE_CHAIN_IDS[0], l1, std::iter::empty(), HARD_FAILURE_CHAIN_IDS[0]).expect("overlay db init must succeed");
-    db.l2_overlays.insert(HARD_FAILURE_CHAIN_IDS[1], l2);
+    let db = gwyneth_phase64_shared_dev::gwyneth_test_overlay_db_single_l2!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        l1,
+        HARD_FAILURE_CHAIN_IDS[1],
+        l2
+    );
 
     let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
-    let (block_env, cfg_env) = base_env(beneficiary);
+    let (block_env, cfg_env) = gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        beneficiary,
+        HARD_FAILURE_BLOCK_GAS_LIMIT
+    );
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
         .for_surface(ExecutionSurface::TxSubmission)
         .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
-    let tx = TxEnv::builder()
-        .chain_id(Some(HARD_FAILURE_CHAIN_IDS[0]))
-        .caller(caller)
-        .kind(TxKind::Call(entry))
-        .gas_limit(HARD_FAILURE_TX_GAS_LIMIT)
-        .gas_price(0)
-        .value(U256::ZERO)
-        .data(Bytes::new())
-        .build()
-        .expect("tx build");
+    let tx = gwyneth_phase64_shared_dev::gwyneth_test_tx_env_call!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        caller,
+        entry,
+        HARD_FAILURE_TX_GAS_LIMIT,
+        0,
+        Some(0),
+        U256::ZERO,
+        Bytes::new(),
+        0
+    );
 
     let out = evm.transact_raw(tx).expect("hard failure is normalized");
 
@@ -122,18 +112,30 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
 
-    insert_eoa(&mut l1, caller);
-    insert_code(
-        &mut l1,
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_eoa!(
+        l1,
+        caller,
+        HARD_FAILURE_CALLER_BALANCE
+    );
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_code!(
+        l1,
         entry,
         code_structural_violation(xcalloptions_word(HARD_FAILURE_CHAIN_IDS[1], target, false), bad_to),
     );
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(HARD_FAILURE_CHAIN_IDS[0], l1, std::iter::empty(), HARD_FAILURE_CHAIN_IDS[0]).expect("overlay db init must succeed");
-    db.l2_overlays.insert(HARD_FAILURE_CHAIN_IDS[1], l2);
+    let db = gwyneth_phase64_shared_dev::gwyneth_test_overlay_db_single_l2!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        l1,
+        HARD_FAILURE_CHAIN_IDS[1],
+        l2
+    );
 
     let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
-    let (block_env, cfg_env) = base_env(beneficiary);
+    let (block_env, cfg_env) = gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        beneficiary,
+        HARD_FAILURE_BLOCK_GAS_LIMIT
+    );
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
@@ -193,18 +195,30 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
 
-    insert_eoa(&mut l1, caller);
-    insert_code(
-        &mut l1,
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_eoa!(
+        l1,
+        caller,
+        HARD_FAILURE_CALLER_BALANCE
+    );
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_code!(
+        l1,
         entry,
         code_structural_violation(xcalloptions_word(HARD_FAILURE_CHAIN_IDS[1], target, false), bad_to),
     );
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(HARD_FAILURE_CHAIN_IDS[0], l1, std::iter::empty(), HARD_FAILURE_CHAIN_IDS[0]).expect("overlay db init must succeed");
-    db.l2_overlays.insert(HARD_FAILURE_CHAIN_IDS[1], l2);
+    let db = gwyneth_phase64_shared_dev::gwyneth_test_overlay_db_single_l2!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        l1,
+        HARD_FAILURE_CHAIN_IDS[1],
+        l2
+    );
 
     let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
-    let (block_env, cfg_env) = base_env(beneficiary);
+    let (block_env, cfg_env) = gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        beneficiary,
+        HARD_FAILURE_BLOCK_GAS_LIMIT
+    );
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
@@ -215,16 +229,17 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
     // structural invariants and reports hard-failure details.
     evm.set_inspector_enabled(false);
 
-    let tx = TxEnv::builder()
-        .chain_id(Some(HARD_FAILURE_CHAIN_IDS[0]))
-        .caller(caller)
-        .kind(TxKind::Call(entry))
-        .gas_limit(HARD_FAILURE_TX_GAS_LIMIT)
-        .gas_price(0)
-        .value(U256::ZERO)
-        .data(Bytes::new())
-        .build()
-        .expect("tx build");
+    let tx = gwyneth_phase64_shared_dev::gwyneth_test_tx_env_call!(
+        HARD_FAILURE_CHAIN_IDS[0],
+        caller,
+        entry,
+        HARD_FAILURE_TX_GAS_LIMIT,
+        0,
+        Some(0),
+        U256::ZERO,
+        Bytes::new(),
+        0
+    );
 
     let out = evm.transact_raw(tx).expect("hard failure is normalized");
     assert!(!out.result.is_success());

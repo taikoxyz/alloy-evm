@@ -3,13 +3,10 @@
 use alloy_evm::evm::BoundedEvmFactory as _;
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::GwynethEvmFactoryImpl;
-use gwyneth_engine::L2OverlayDb;
 use gwyneth_types::ExecutionSurface;
 use revm::{
-    context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
     database::InMemoryDB,
-    primitives::{Address, Bytes, TxKind, U256},
-    state::AccountInfo,
+    primitives::{Address, Bytes, U256},
 };
 
 #[test]
@@ -18,38 +15,29 @@ fn redesign_alloy_smoke() {
     let recipient = Address::from([0x22; 20]);
 
     let mut l1 = InMemoryDB::default();
-    l1.insert_account_info(
-        caller,
-        AccountInfo { balance: U256::from(10_000_000_000u64), ..Default::default() },
-    );
+    gwyneth_phase64_shared_dev::gwyneth_test_insert_eoa!(l1, caller, 10_000_000_000u64);
     let l2 = InMemoryDB::default();
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
-    db.l2_overlays.insert(2, l2);
-
-    let mut cfg_env = CfgEnv::default();
-    cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
-    cfg_env.chain_id = 1;
-
-    let mut block_env = BlockEnv::default();
-    block_env.beneficiary = Address::ZERO;
-    block_env.gas_limit = 30_000_000;
+    let db = gwyneth_phase64_shared_dev::gwyneth_test_overlay_db_single_l2!(1u64, l1, 2u64, l2);
+    let (block_env, cfg_env) =
+        gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(1u64, Address::ZERO, 30_000_000);
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
         .for_surface(ExecutionSurface::TxSubmission)
         .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
-    let mut tx = TxEnv::default();
-    tx.caller = caller;
-    tx.kind = TxKind::Call(recipient);
-    tx.chain_id = Some(1);
-    tx.gas_limit = 250_000;
-    tx.gas_price = 0;
-    tx.gas_priority_fee = Some(0);
-    tx.value = U256::from(1);
-    tx.data = Bytes::new();
-    tx.nonce = 0;
+    let tx = gwyneth_phase64_shared_dev::gwyneth_test_tx_env_call!(
+        1u64,
+        caller,
+        recipient,
+        250_000,
+        0,
+        Some(0),
+        U256::from(1),
+        Bytes::new(),
+        0
+    );
 
     let out = evm.transact_raw(tx).expect("alloy-gwyneth-evm tx executes");
     assert!(out.result.is_success());
