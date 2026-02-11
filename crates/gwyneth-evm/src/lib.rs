@@ -22,7 +22,8 @@ use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::{map::HashMap, Bytes};
 use core::fmt::Debug;
 use gwyneth_types::{
-    normalize_superrevert, ChainState, ExecutionSurface, TreasuryForwarding, TreasuryForwardingMode,
+    normalize_superrevert, run_with_chain_switch_restore, ChainState, ExecutionSurface,
+    TreasuryForwarding, TreasuryForwardingMode,
 };
 use gwyneth_detector::DetectorConfig;
 use gwyneth_engine::{
@@ -329,25 +330,36 @@ where
         context: &'static str,
         require_alignment_check: bool,
     ) -> Result<(), String> {
-        gwyneth_engine::apply_chain_state(
-            &mut self.inner.ctx,
-            ChainState::new(origin_chain_id, origin_chain_id, start_mode),
+        run_with_chain_switch_restore(
+            self,
+            origin_chain_id,
+            origin_chain_id,
+            context,
+            |_runner, _chain_id| Ok(()),
+            |runner| {
+                gwyneth_engine::apply_chain_state(
+                    &mut runner.inner.ctx,
+                    ChainState::new(origin_chain_id, origin_chain_id, start_mode),
+                )
+                .map_err(|_| {
+                    alloc::format!(
+                        "failed to restore origin chain (wanted={origin_chain_id}, got={})",
+                        runner.db().current_chain_id()
+                    )
+                })?;
+
+                if require_alignment_check && runner.db().current_chain_id() != origin_chain_id {
+                    return Err(alloc::format!(
+                        "origin chain misaligned after apply_chain_state (wanted={origin_chain_id}, got={})",
+                        runner.db().current_chain_id()
+                    ));
+                }
+
+                Ok(())
+            },
         )
-        .map_err(|_| {
-            alloc::format!(
-                "{context}: failed to restore origin chain (wanted={origin_chain_id}, got={})",
-                self.db().current_chain_id()
-            )
-        })?;
-
-        if require_alignment_check && self.db().current_chain_id() != origin_chain_id {
-            return Err(alloc::format!(
-                "{context}: origin chain misaligned after apply_chain_state (wanted={origin_chain_id}, got={})",
-                self.db().current_chain_id()
-            ));
-        }
-
-        Ok(())
+        .map(|_| ())
+        .map_err(|err| err.to_string())
     }
 
     fn ensure_origin_chain_alignment(
