@@ -3,8 +3,12 @@
 use alloy_evm::evm::BoundedEvmFactory as _;
 use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactoryImpl, GwynethHaltReason};
-use gwyneth_engine::{HardFailureCode, L2OverlayDb};
-use gwyneth_phase64_shared_dev::{code_structural_violation, xcalloptions_word};
+use gwyneth_engine::HardFailureCode;
+use gwyneth_phase64_shared_dev::{
+    code_structural_violation, xcalloptions_word, HARD_FAILURE_BAD_TO, HARD_FAILURE_BENEFICIARY,
+    HARD_FAILURE_BLOCK_GAS_LIMIT, HARD_FAILURE_CALLER, HARD_FAILURE_CALLER_BALANCE,
+    HARD_FAILURE_CHAIN_IDS, HARD_FAILURE_ENTRY, HARD_FAILURE_TARGET, HARD_FAILURE_TX_GAS_LIMIT,
+};
 use gwyneth_types::ExecutionSurface;
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv},
@@ -20,27 +24,27 @@ fn insert_code(db: &mut InMemoryDB, addr: Address, code: Vec<u8>) {
 }
 
 fn insert_eoa(db: &mut InMemoryDB, addr: Address) {
-    let info = AccountInfo::default().with_balance(U256::from(1_000_000u64));
+    let info = AccountInfo::default().with_balance(U256::from(HARD_FAILURE_CALLER_BALANCE));
     db.insert_account_info(addr, info);
 }
 
-fn base_env() -> (BlockEnv, CfgEnv) {
+fn base_env(beneficiary: Address) -> (BlockEnv, CfgEnv) {
     let mut cfg_env = CfgEnv::default();
     cfg_env.spec = revm::primitives::hardfork::SpecId::CANCUN;
-    cfg_env.chain_id = 1;
+    cfg_env.chain_id = HARD_FAILURE_CHAIN_IDS[0];
 
     let mut block_env = BlockEnv::default();
-    block_env.beneficiary = Address::ZERO;
-    block_env.gas_limit = 30_000_000;
+    block_env.beneficiary = beneficiary;
+    block_env.gas_limit = HARD_FAILURE_BLOCK_GAS_LIMIT;
     (block_env, cfg_env)
 }
 
 #[test]
 fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
-    let caller = Address::from([0x10; 20]);
-    let entry = Address::from([0x13; 20]);
-    let bad_to = Address::from([0x99; 20]);
-    let target = Address::from([0x22; 20]);
+    let caller = Address::from(HARD_FAILURE_CALLER);
+    let entry = Address::from(HARD_FAILURE_ENTRY);
+    let bad_to = Address::from(HARD_FAILURE_BAD_TO);
+    let target = Address::from(HARD_FAILURE_TARGET);
 
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
@@ -49,13 +53,14 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     insert_code(
         &mut l1,
         entry,
-        code_structural_violation(xcalloptions_word(2, target, false), bad_to),
+        code_structural_violation(xcalloptions_word(HARD_FAILURE_CHAIN_IDS[1], target, false), bad_to),
     );
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
-    db.l2_overlays.insert(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(HARD_FAILURE_CHAIN_IDS[0], l1, std::iter::empty(), HARD_FAILURE_CHAIN_IDS[0]).expect("overlay db init must succeed");
+    db.l2_overlays.insert(HARD_FAILURE_CHAIN_IDS[1], l2);
 
-    let (block_env, cfg_env) = base_env();
+    let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
+    let (block_env, cfg_env) = base_env(beneficiary);
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
@@ -63,10 +68,10 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
         .create_evm(db, alloy_evm::EvmEnv { block_env, cfg_env });
 
     let tx = TxEnv::builder()
-        .chain_id(Some(1))
+        .chain_id(Some(HARD_FAILURE_CHAIN_IDS[0]))
         .caller(caller)
         .kind(TxKind::Call(entry))
-        .gas_limit(123_456)
+        .gas_limit(HARD_FAILURE_TX_GAS_LIMIT)
         .gas_price(0)
         .value(U256::ZERO)
         .data(Bytes::new())
@@ -76,17 +81,17 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
     let out = evm.transact_raw(tx).expect("hard failure is normalized");
 
     assert!(!out.result.is_success());
-    assert_eq!(out.result.gas_used(), 123_456);
+    assert_eq!(out.result.gas_used(), HARD_FAILURE_TX_GAS_LIMIT);
     assert!(out.result.logs().is_empty());
     assert!(out.result.output().is_none());
 
     match out.result {
         ExecutionResult::Halt { reason, gas_used } => {
-            assert_eq!(gas_used, 123_456);
+            assert_eq!(gas_used, HARD_FAILURE_TX_GAS_LIMIT);
 
             match reason {
                 GwynethHaltReason::GwynethHardFailure(hf) => {
-                    assert_eq!(hf.chain_id, 1);
+                    assert_eq!(hf.chain_id, HARD_FAILURE_CHAIN_IDS[0]);
                     assert_eq!(hf.opcode, Some(revm::state::bytecode::opcode::CALL));
                     assert_eq!(
                         hf.code,
@@ -96,7 +101,7 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
                         hf.reason,
                         HardFailureCode::XcalloptionsMustBeFollowedByCallToExtensionOracle.reason()
                     );
-                    assert_eq!(hf.gas_used, 123_456);
+                    assert_eq!(hf.gas_used, HARD_FAILURE_TX_GAS_LIMIT);
                     assert!(hf.logs.is_empty());
                     assert!(hf.output.is_empty());
                 }
@@ -109,10 +114,10 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
 
 #[test]
 fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
-    let caller = Address::from([0x10; 20]);
-    let entry = Address::from([0x13; 20]);
-    let bad_to = Address::from([0x99; 20]);
-    let target = Address::from([0x22; 20]);
+    let caller = Address::from(HARD_FAILURE_CALLER);
+    let entry = Address::from(HARD_FAILURE_ENTRY);
+    let bad_to = Address::from(HARD_FAILURE_BAD_TO);
+    let target = Address::from(HARD_FAILURE_TARGET);
 
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
@@ -121,13 +126,14 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
     insert_code(
         &mut l1,
         entry,
-        code_structural_violation(xcalloptions_word(2, target, false), bad_to),
+        code_structural_violation(xcalloptions_word(HARD_FAILURE_CHAIN_IDS[1], target, false), bad_to),
     );
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
-    db.l2_overlays.insert(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(HARD_FAILURE_CHAIN_IDS[0], l1, std::iter::empty(), HARD_FAILURE_CHAIN_IDS[0]).expect("overlay db init must succeed");
+    db.l2_overlays.insert(HARD_FAILURE_CHAIN_IDS[1], l2);
 
-    let (block_env, cfg_env) = base_env();
+    let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
+    let (block_env, cfg_env) = base_env(beneficiary);
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
@@ -146,17 +152,17 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
         .expect("hard failure is normalized");
 
     assert!(!out.result.is_success());
-    assert_eq!(out.result.gas_used(), 30_000_000);
+    assert_eq!(out.result.gas_used(), HARD_FAILURE_BLOCK_GAS_LIMIT);
     assert!(out.result.logs().is_empty());
     assert!(out.result.output().is_none());
 
     match out.result {
         ExecutionResult::Halt { reason, gas_used } => {
-            assert_eq!(gas_used, 30_000_000);
+            assert_eq!(gas_used, HARD_FAILURE_BLOCK_GAS_LIMIT);
 
             match reason {
                 GwynethHaltReason::GwynethHardFailure(hf) => {
-                    assert_eq!(hf.chain_id, 1);
+                    assert_eq!(hf.chain_id, HARD_FAILURE_CHAIN_IDS[0]);
                     assert_eq!(hf.opcode, Some(revm::state::bytecode::opcode::CALL));
                     assert_eq!(
                         hf.code,
@@ -166,7 +172,7 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
                         hf.reason,
                         HardFailureCode::XcalloptionsMustBeFollowedByCallToExtensionOracle.reason()
                     );
-                    assert_eq!(hf.gas_used, 30_000_000);
+                    assert_eq!(hf.gas_used, HARD_FAILURE_BLOCK_GAS_LIMIT);
                     assert!(hf.logs.is_empty());
                     assert!(hf.output.is_empty());
                 }
@@ -179,10 +185,10 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
 
 #[test]
 fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
-    let caller = Address::from([0x10; 20]);
-    let entry = Address::from([0x13; 20]);
-    let bad_to = Address::from([0x99; 20]);
-    let target = Address::from([0x22; 20]);
+    let caller = Address::from(HARD_FAILURE_CALLER);
+    let entry = Address::from(HARD_FAILURE_ENTRY);
+    let bad_to = Address::from(HARD_FAILURE_BAD_TO);
+    let target = Address::from(HARD_FAILURE_TARGET);
 
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
@@ -191,13 +197,14 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
     insert_code(
         &mut l1,
         entry,
-        code_structural_violation(xcalloptions_word(2, target, false), bad_to),
+        code_structural_violation(xcalloptions_word(HARD_FAILURE_CHAIN_IDS[1], target, false), bad_to),
     );
 
-    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(1, l1, std::iter::empty(), 1).expect("overlay db init must succeed");
-    db.l2_overlays.insert(2, l2);
+    let mut db = gwyneth_engine::build_l2_overlay_db_adapter(HARD_FAILURE_CHAIN_IDS[0], l1, std::iter::empty(), HARD_FAILURE_CHAIN_IDS[0]).expect("overlay db init must succeed");
+    db.l2_overlays.insert(HARD_FAILURE_CHAIN_IDS[1], l2);
 
-    let (block_env, cfg_env) = base_env();
+    let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
+    let (block_env, cfg_env) = base_env(beneficiary);
 
     let factory = GwynethEvmFactoryImpl::default();
     let mut evm = factory
@@ -209,10 +216,10 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
     evm.set_inspector_enabled(false);
 
     let tx = TxEnv::builder()
-        .chain_id(Some(1))
+        .chain_id(Some(HARD_FAILURE_CHAIN_IDS[0]))
         .caller(caller)
         .kind(TxKind::Call(entry))
-        .gas_limit(123_456)
+        .gas_limit(HARD_FAILURE_TX_GAS_LIMIT)
         .gas_price(0)
         .value(U256::ZERO)
         .data(Bytes::new())
