@@ -323,7 +323,7 @@ where
         )
     }
 
-    fn apply_origin_chain_state(
+    fn apply_origin_chain_state_with_mode(
         &mut self,
         origin_chain_id: u64,
         start_mode: gwyneth_types::ExecutionMode,
@@ -362,6 +362,21 @@ where
         .map_err(|err| err.to_string())
     }
 
+    fn apply_origin_chain_alignment(
+        &mut self,
+        origin_chain_id: u64,
+        context: &'static str,
+        require_alignment_check: bool,
+    ) -> Result<(), String> {
+        let start_mode = self.origin_start_mode(origin_chain_id);
+        self.apply_origin_chain_state_with_mode(
+            origin_chain_id,
+            start_mode,
+            context,
+            require_alignment_check,
+        )
+    }
+
     fn ensure_origin_chain_alignment(
         &mut self,
         origin_chain_id: u64,
@@ -371,8 +386,7 @@ where
             return Ok(());
         }
 
-        let start_mode = self.origin_start_mode(origin_chain_id);
-        self.apply_origin_chain_state(origin_chain_id, start_mode, context, true)
+        self.apply_origin_chain_alignment(origin_chain_id, context, true)
             .map_err(EVMError::Custom)
     }
 
@@ -393,9 +407,12 @@ where
             .journal_mut()
             .reset_for_new_tx(start_mode, origin_chain_id);
 
-        if let Err(_err) =
-            self.apply_origin_chain_state(origin_chain_id, start_mode, "reset_for_new_tx", false)
-        {
+        if let Err(_err) = self.apply_origin_chain_state_with_mode(
+            origin_chain_id,
+            start_mode,
+            "reset_for_new_tx",
+            false,
+        ) {
             if strict_chain_id {
                 return Err(EVMError::Transaction(InvalidTransaction::InvalidChainId));
             }
@@ -732,6 +749,49 @@ where
             other => other,
         }
     }
+
+    fn normalize_hard_failure_post_processing<R>(
+        &mut self,
+        origin_chain_id: u64,
+        exec_result: &mut revm::context_interface::result::ExecutionResult<R>,
+        apply_fee_surface: bool,
+    ) -> Result<Option<GwynethHardFailure>, EVMError<<DB as revm::Database>::Error, InvalidTransaction>> {
+        let expected_gas_used = self.inner.ctx.tx().gas_limit;
+        let Some((_trigger_chain_id, hard_failure)) = self.take_hard_failure(expected_gas_used) else {
+            return Ok(None);
+        };
+
+        let normalized = normalize_superrevert(self.surface, expected_gas_used);
+        let actual_gas_used = exec_result.gas_used();
+        if apply_fee_surface {
+            self.apply_superrevert_fee_surface_to_balance_deltas(
+                origin_chain_id,
+                normalized.gas_used,
+                actual_gas_used,
+            )?;
+        }
+
+        if normalized.gas_used != actual_gas_used {
+            if let revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } =
+                exec_result
+            {
+                *gas_used = normalized.gas_used;
+            }
+        }
+
+        Ok(Some(hard_failure))
+    }
+
+    fn finalize_post_processing_result<R>(
+        exec_result: revm::context_interface::result::ExecutionResult<R>,
+        hard_failure: Option<GwynethHardFailure>,
+    ) -> revm::context_interface::result::ExecutionResult<GwynethHaltReason>
+    where
+        GwynethHaltReason: From<R>,
+    {
+        let exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
+        Self::attach_hard_failure_to_execution_result(exec_result, hard_failure)
+    }
 }
 
 impl<DB, I> Evm for GwynethRunner<DB, I>
@@ -769,34 +829,11 @@ where
 
         let mut exec_result = self.inner.inspect_one_tx(tx)?;
 
-        // Normalize gwyneth hard failures after core has produced a stable terminal halt, but
-        // before we finalize state (so per-chain attribution and fee corrections are captured).
-        let expected_gas_used = self.inner.ctx.tx().gas_limit;
-        let hard_failure = match self.take_hard_failure(expected_gas_used) {
-            Some((_trigger_chain_id, hard_failure)) => {
-                let normalized = normalize_superrevert(self.surface, expected_gas_used);
-                let actual_gas_used = exec_result.gas_used();
-                self.apply_superrevert_fee_surface_to_balance_deltas(
-                    origin_chain_id,
-                    normalized.gas_used,
-                    actual_gas_used,
-                )?;
-
-                if normalized.gas_used != actual_gas_used {
-                    if let revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } =
-                        &mut exec_result
-                    {
-                        *gas_used = normalized.gas_used;
-                    }
-                }
-
-                Some(hard_failure)
-            }
-            None => None,
-        };
-
-        let mut exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
-        exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
+        // Shared hard-failure post-processing helper keeps tx and system-call normalization
+        // aligned while preserving fee-surface semantics per execution path.
+        let hard_failure =
+            self.normalize_hard_failure_post_processing(origin_chain_id, &mut exec_result, true)?;
+        let exec_result = Self::finalize_post_processing_result(exec_result, hard_failure);
 
         self.apply_treasury_forwarding_post_run(origin_chain_id, exec_result.gas_used())?;
 
@@ -817,25 +854,9 @@ where
             self.inner
                 .inspect_one_system_call_with_caller(caller, contract, data)?;
 
-        let expected_gas_used = self.inner.ctx.tx().gas_limit;
-        let hard_failure = match self.take_hard_failure(expected_gas_used) {
-            Some((_trigger_chain_id, hard_failure)) => {
-                let normalized = normalize_superrevert(self.surface, expected_gas_used);
-                let actual_gas_used = exec_result.gas_used();
-                if normalized.gas_used != actual_gas_used {
-                    if let revm::context_interface::result::ExecutionResult::Halt { gas_used, .. } =
-                        &mut exec_result
-                    {
-                        *gas_used = normalized.gas_used;
-                    }
-                }
-                Some(hard_failure)
-            }
-            None => None,
-        };
-
-        let exec_result = exec_result.map_haltreason(GwynethHaltReason::from);
-        let exec_result = Self::attach_hard_failure_to_execution_result(exec_result, hard_failure);
+        let hard_failure =
+            self.normalize_hard_failure_post_processing(origin_chain_id, &mut exec_result, false)?;
+        let exec_result = Self::finalize_post_processing_result(exec_result, hard_failure);
 
         let state = self.inner.journal_mut().finalize();
         Ok(ResultAndState::new(exec_result, state))
