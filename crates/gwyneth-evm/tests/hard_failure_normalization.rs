@@ -5,9 +5,8 @@ use alloy_evm::Evm as _;
 use alloy_gwyneth_evm::{GwynethEvmFactoryImpl, GwynethHaltReason};
 use gwyneth_engine::HardFailureCode;
 use gwyneth_phase64_shared_dev::{
-    code_structural_violation, xcalloptions_word, HARD_FAILURE_BAD_TO, HARD_FAILURE_BENEFICIARY,
-    HARD_FAILURE_BLOCK_GAS_LIMIT, HARD_FAILURE_CALLER, HARD_FAILURE_CALLER_BALANCE,
-    HARD_FAILURE_CHAIN_IDS, HARD_FAILURE_ENTRY, HARD_FAILURE_TARGET, HARD_FAILURE_TX_GAS_LIMIT,
+    code_structural_violation, xcalloptions_word, HARD_FAILURE_BLOCK_GAS_LIMIT,
+    HARD_FAILURE_CALLER_BALANCE, HARD_FAILURE_CHAIN_IDS, HARD_FAILURE_TX_GAS_LIMIT,
 };
 use gwyneth_types::ExecutionSurface;
 use revm::{
@@ -18,10 +17,11 @@ use revm::{
 
 #[test]
 fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
-    let caller = Address::from(HARD_FAILURE_CALLER);
-    let entry = Address::from(HARD_FAILURE_ENTRY);
-    let bad_to = Address::from(HARD_FAILURE_BAD_TO);
-    let target = Address::from(HARD_FAILURE_TARGET);
+    let addrs = gwyneth_phase64_shared_dev::hard_failure_addresses::<Address>();
+    let caller = addrs.caller;
+    let entry = addrs.entry;
+    let bad_to = addrs.bad_to;
+    let target = addrs.target;
 
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
@@ -44,7 +44,7 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
         l2
     );
 
-    let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
+    let beneficiary = addrs.beneficiary;
     let (block_env, cfg_env) = gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(
         HARD_FAILURE_CHAIN_IDS[0],
         beneficiary,
@@ -104,10 +104,11 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_raw() {
 
 #[test]
 fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
-    let caller = Address::from(HARD_FAILURE_CALLER);
-    let entry = Address::from(HARD_FAILURE_ENTRY);
-    let bad_to = Address::from(HARD_FAILURE_BAD_TO);
-    let target = Address::from(HARD_FAILURE_TARGET);
+    let addrs = gwyneth_phase64_shared_dev::hard_failure_addresses::<Address>();
+    let caller = addrs.caller;
+    let entry = addrs.entry;
+    let bad_to = addrs.bad_to;
+    let target = addrs.target;
 
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
@@ -130,7 +131,7 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
         l2
     );
 
-    let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
+    let beneficiary = addrs.beneficiary;
     let (block_env, cfg_env) = gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(
         HARD_FAILURE_CHAIN_IDS[0],
         beneficiary,
@@ -187,10 +188,11 @@ fn redesign_alloy_smoke_hard_failure_normalization_transact_system_call() {
 
 #[test]
 fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
-    let caller = Address::from(HARD_FAILURE_CALLER);
-    let entry = Address::from(HARD_FAILURE_ENTRY);
-    let bad_to = Address::from(HARD_FAILURE_BAD_TO);
-    let target = Address::from(HARD_FAILURE_TARGET);
+    let addrs = gwyneth_phase64_shared_dev::hard_failure_addresses::<Address>();
+    let caller = addrs.caller;
+    let entry = addrs.entry;
+    let bad_to = addrs.bad_to;
+    let target = addrs.target;
 
     let mut l1 = InMemoryDB::default();
     let l2 = InMemoryDB::default();
@@ -213,7 +215,7 @@ fn audit_user_inspector_disable_does_not_disable_gwyneth_inspector() {
         l2
     );
 
-    let beneficiary = Address::from(HARD_FAILURE_BENEFICIARY);
+    let beneficiary = addrs.beneficiary;
     let (block_env, cfg_env) = gwyneth_phase64_shared_dev::gwyneth_test_base_env_cancun!(
         HARD_FAILURE_CHAIN_IDS[0],
         beneficiary,
