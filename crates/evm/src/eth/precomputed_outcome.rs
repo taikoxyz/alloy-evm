@@ -47,6 +47,68 @@ pub struct ParentHeaderView {
     pub base_fee_per_gas: u64,
 }
 
+impl ComparisonInputs {
+    /// Create commitment inputs from explicit recomputed fields.
+    #[must_use]
+    pub const fn new(
+        tx_root: B256,
+        receipts_root: B256,
+        logs_bloom: Bloom,
+        gas_used: u64,
+        withdrawals_root: Option<B256>,
+        blob_gas_used: Option<u64>,
+        requests_hash: Option<B256>,
+    ) -> Self {
+        Self {
+            tx_root,
+            receipts_root,
+            logs_bloom,
+            gas_used,
+            withdrawals_root,
+            blob_gas_used,
+            requests_hash,
+        }
+    }
+
+    /// Build commitment inputs directly from a header-like view.
+    #[must_use]
+    pub fn from_header<H: HeaderView + ?Sized>(header: &H) -> Self {
+        Self::new(
+            header.transactions_root(),
+            header.receipts_root(),
+            header.logs_bloom(),
+            header.gas_used(),
+            header.withdrawals_root(),
+            header.blob_gas_used(),
+            header.requests_hash(),
+        )
+    }
+}
+
+impl ParentHeaderView {
+    /// Construct a parent-header view from explicit parent fields.
+    #[must_use]
+    pub const fn new(
+        timestamp: u64,
+        blob_gas_used: Option<u64>,
+        excess_blob_gas: Option<u64>,
+        base_fee_per_gas: u64,
+    ) -> Self {
+        Self { timestamp, blob_gas_used, excess_blob_gas, base_fee_per_gas }
+    }
+
+    /// Construct a parent-header view from any [`BlockHeader`] implementation.
+    #[must_use]
+    pub fn from_header<H: BlockHeader + ?Sized>(header: &H) -> Self {
+        Self::new(
+            header.timestamp(),
+            header.blob_gas_used(),
+            header.excess_blob_gas(),
+            header.base_fee_per_gas().unwrap_or(0),
+        )
+    }
+}
+
 /// A validated, diff-backed block outcome that can be installed without executing transactions.
 #[derive(Debug, Clone)]
 pub struct PrecomputedBlockOutcome<Receipt> {
