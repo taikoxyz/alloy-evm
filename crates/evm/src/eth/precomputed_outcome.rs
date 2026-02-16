@@ -211,17 +211,10 @@ where
     fn blob_params_at(&self, block_number: u64, timestamp: u64) -> BlobParams {
         // Prefer the most recent blob-params fork that is active. Missing forks default to
         // `ForkCondition::Never` via `EthereumHardforks`.
-        if self.is_fork_active_at(EthereumHardfork::Bpo5, block_number, timestamp) {
-            return BlobParams::bpo2();
-        }
-        if self.is_fork_active_at(EthereumHardfork::Bpo4, block_number, timestamp) {
-            return BlobParams::bpo2();
-        }
-        if self.is_fork_active_at(EthereumHardfork::Bpo3, block_number, timestamp) {
-            return BlobParams::bpo2();
-        }
-        if self.is_fork_active_at(EthereumHardfork::Bpo2, block_number, timestamp) {
-            return BlobParams::bpo2();
+        for fork in [EthereumHardfork::Bpo5, EthereumHardfork::Bpo4, EthereumHardfork::Bpo3, EthereumHardfork::Bpo2] {
+            if self.is_fork_active_at(fork, block_number, timestamp) {
+                return BlobParams::bpo2();
+            }
         }
         if self.is_fork_active_at(EthereumHardfork::Bpo1, block_number, timestamp) {
             return BlobParams::bpo1();
