@@ -72,7 +72,7 @@ impl ComparisonInputs {
 
     /// Build commitment inputs directly from a header-like view.
     #[must_use]
-    pub fn from_header<H: HeaderView + ?Sized>(header: &H) -> Self {
+    pub fn from_header<H: BlockHeader + ?Sized>(header: &H) -> Self {
         Self::new(
             header.transactions_root(),
             header.receipts_root(),
@@ -118,75 +118,6 @@ pub struct PrecomputedBlockOutcome<Receipt> {
     pub bundle: BundleState,
     /// The commitment inputs recomputed from block-local data.
     pub comparison_inputs: ComparisonInputs,
-}
-
-/// Minimal header view used by [`canonicalize_and_compare`].
-pub trait HeaderView {
-    /// State root committed in the header.
-    fn state_root(&self) -> B256;
-    /// Transactions root committed in the header.
-    fn transactions_root(&self) -> B256;
-    /// Receipts root committed in the header.
-    fn receipts_root(&self) -> B256;
-    /// Logs bloom committed in the header.
-    fn logs_bloom(&self) -> Bloom;
-    /// Gas used committed in the header.
-    fn gas_used(&self) -> u64;
-    /// Fork-conditional withdrawals root.
-    fn withdrawals_root(&self) -> Option<B256>;
-    /// Fork-conditional blob gas used.
-    fn blob_gas_used(&self) -> Option<u64>;
-    /// Fork-conditional excess blob gas.
-    fn excess_blob_gas(&self) -> Option<u64>;
-    /// Fork-conditional requests hash.
-    fn requests_hash(&self) -> Option<B256>;
-    /// Extra-data bytes committed by the header.
-    fn extra_data(&self) -> &[u8];
-}
-
-impl<T> HeaderView for T
-where
-    T: BlockHeader + ?Sized,
-{
-    fn state_root(&self) -> B256 {
-        BlockHeader::state_root(self)
-    }
-
-    fn transactions_root(&self) -> B256 {
-        BlockHeader::transactions_root(self)
-    }
-
-    fn receipts_root(&self) -> B256 {
-        BlockHeader::receipts_root(self)
-    }
-
-    fn logs_bloom(&self) -> Bloom {
-        BlockHeader::logs_bloom(self)
-    }
-
-    fn gas_used(&self) -> u64 {
-        BlockHeader::gas_used(self)
-    }
-
-    fn withdrawals_root(&self) -> Option<B256> {
-        BlockHeader::withdrawals_root(self)
-    }
-
-    fn blob_gas_used(&self) -> Option<u64> {
-        BlockHeader::blob_gas_used(self)
-    }
-
-    fn excess_blob_gas(&self) -> Option<u64> {
-        BlockHeader::excess_blob_gas(self)
-    }
-
-    fn requests_hash(&self) -> Option<B256> {
-        BlockHeader::requests_hash(self)
-    }
-
-    fn extra_data(&self) -> &[u8] {
-        BlockHeader::extra_data(self).as_ref()
-    }
 }
 
 /// Fork schedule interface required by [`canonicalize_and_compare`].
@@ -365,7 +296,7 @@ pub fn canonicalize_and_compare<H, S>(
     fork_schedule: &S,
 ) -> Result<(), PrecomputedOutcomeValidationError>
 where
-    H: HeaderView + ?Sized,
+    H: BlockHeader + ?Sized,
     S: ForkSchedule + ?Sized,
 {
     if da_header.state_root() != state_root {
@@ -375,7 +306,7 @@ where
         });
     }
 
-    let da_extra_data = HeaderView::extra_data(da_header);
+    let da_extra_data = da_header.extra_data().as_ref();
     if da_extra_data != expected_extra_data {
         return Err(PrecomputedOutcomeValidationError::ExtraDataMismatch {
             expected_len: expected_extra_data.len(),
