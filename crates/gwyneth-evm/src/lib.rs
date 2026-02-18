@@ -893,27 +893,6 @@ where
     L2DB::Error: Debug + Send + Sync + 'static,
     I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>,
 {
-    /// Construct a Gwyneth EVM that already has an L2 overlay configured.
-    #[allow(dead_code)]
-    pub fn new_with_l2_overlay(
-        l1_db: L1DB,
-        l2_db: L2DB,
-        chain_id: u64,
-        inspector: I,
-        block_env: BlockEnv,
-        cfg_env: CfgEnv,
-    ) -> Result<Self, GwynethRunnerInitError> {
-        let overlay = build_single_chain_overlay_db(l1_db, l2_db, chain_id)?;
-        Ok(Self::from_env(
-            overlay,
-            EvmEnv { block_env, cfg_env },
-            inspector,
-            DetectorConfig::default(),
-            ExecutionSurface::TxSubmission,
-            true,
-        ))
-    }
-
     /// Switch the active overlay chain.
     pub fn switch_chain(&mut self, chain_id: u64) -> Result<(), String> {
         let mode = self.ctx().local().execution_mode();
