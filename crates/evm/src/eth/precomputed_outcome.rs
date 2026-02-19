@@ -342,36 +342,30 @@ where
         });
     }
 
-    let is_shanghai =
-        fork_schedule.is_fork_active_at(EthereumHardfork::Shanghai, block_number, timestamp);
-    match (is_shanghai, da_header.withdrawals_root(), inputs.withdrawals_root) {
-        (false, None, None) => {}
-        (false, Some(_), _) | (false, _, Some(_)) => {
-            return Err(PrecomputedOutcomeValidationError::WithdrawalsRootUnexpected);
-        }
-        (true, None, _) | (true, _, None) => {
-            return Err(PrecomputedOutcomeValidationError::WithdrawalsRootMissing);
-        }
-        (true, Some(got), Some(expected)) if got == expected => {}
-        (true, Some(got), Some(expected)) => {
-            return Err(PrecomputedOutcomeValidationError::WithdrawalsRootMismatch { expected, got });
-        }
+    macro_rules! validate_fork_optional_eq {
+        ($active:expr, $got:expr, $expected:expr, $missing:ident, $unexpected:ident, $mismatch:ident) => {{
+            let got = $got;
+            let expected = $expected;
+            if $active {
+                let (got, expected) = match (got, expected) {
+                    (Some(got), Some(expected)) => (got, expected),
+                    _ => return Err(PrecomputedOutcomeValidationError::$missing),
+                };
+                if got != expected {
+                    return Err(PrecomputedOutcomeValidationError::$mismatch { expected, got });
+                }
+            } else if got.is_some() || expected.is_some() {
+                return Err(PrecomputedOutcomeValidationError::$unexpected);
+            }
+        }};
     }
 
+    let is_shanghai =
+        fork_schedule.is_fork_active_at(EthereumHardfork::Shanghai, block_number, timestamp);
+    validate_fork_optional_eq!(is_shanghai, da_header.withdrawals_root(), inputs.withdrawals_root, WithdrawalsRootMissing, WithdrawalsRootUnexpected, WithdrawalsRootMismatch);
+
     let is_cancun = fork_schedule.is_fork_active_at(EthereumHardfork::Cancun, block_number, timestamp);
-    match (is_cancun, da_header.blob_gas_used(), inputs.blob_gas_used) {
-        (false, None, None) => {}
-        (false, Some(_), _) | (false, _, Some(_)) => {
-            return Err(PrecomputedOutcomeValidationError::BlobGasUsedUnexpected);
-        }
-        (true, None, _) | (true, _, None) => {
-            return Err(PrecomputedOutcomeValidationError::BlobGasUsedMissing);
-        }
-        (true, Some(got), Some(expected)) if got == expected => {}
-        (true, Some(got), Some(expected)) => {
-            return Err(PrecomputedOutcomeValidationError::BlobGasUsedMismatch { expected, got });
-        }
-    }
+    validate_fork_optional_eq!(is_cancun, da_header.blob_gas_used(), inputs.blob_gas_used, BlobGasUsedMissing, BlobGasUsedUnexpected, BlobGasUsedMismatch);
 
     match (is_cancun, da_header.excess_blob_gas()) {
         (false, None) => {}
@@ -418,19 +412,7 @@ where
     }
 
     let is_prague = fork_schedule.is_fork_active_at(EthereumHardfork::Prague, block_number, timestamp);
-    match (is_prague, da_header.requests_hash(), inputs.requests_hash) {
-        (false, None, None) => {}
-        (false, Some(_), _) | (false, _, Some(_)) => {
-            return Err(PrecomputedOutcomeValidationError::RequestsHashUnexpected);
-        }
-        (true, None, _) | (true, _, None) => {
-            return Err(PrecomputedOutcomeValidationError::RequestsHashMissing);
-        }
-        (true, Some(got), Some(expected)) if got == expected => {}
-        (true, Some(got), Some(expected)) => {
-            return Err(PrecomputedOutcomeValidationError::RequestsHashMismatch { expected, got });
-        }
-    }
+    validate_fork_optional_eq!(is_prague, da_header.requests_hash(), inputs.requests_hash, RequestsHashMissing, RequestsHashUnexpected, RequestsHashMismatch);
 
     Ok(())
 }
