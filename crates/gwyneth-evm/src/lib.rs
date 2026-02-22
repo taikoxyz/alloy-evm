@@ -27,8 +27,8 @@ use gwyneth_types::{
 };
 use gwyneth_detector::DetectorConfig;
 use gwyneth_engine::{
-    build_l2_overlay_db_adapter, GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal,
-    GwynethPrecompileProvider, HardFailureInspector, L2OverlayDb, TrackingJournal,
+    GwynethChain, GwynethContext, GwynethHardFailure, GwynethLocal, GwynethPrecompileProvider,
+    HardFailureInspector, TrackingJournal,
 };
 use revm::{
     context::{block::BlockEnv, cfg::CfgEnv, tx::TxEnv, Context},
@@ -53,26 +53,6 @@ type InnerEvm<DB, I> = revm::context::evm::Evm<
     GwynethPrecompileProvider,
     EthFrame<EthInterpreter>,
 >;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GwynethRunnerInitError {
-    OverlayDbAdapterInit { chain_id: u64, reason: String },
-}
-
-fn build_single_chain_overlay_db<L1DB, L2DB>(
-    l1_db: L1DB,
-    l2_db: L2DB,
-    chain_id: u64,
-) -> Result<L2OverlayDb<L1DB, L2DB>, GwynethRunnerInitError>
-where
-    L1DB: revm::Database + Debug,
-    L2DB: revm::Database + Debug,
-    L1DB::Error: Debug + Send + Sync + 'static,
-    L2DB::Error: Debug + Send + Sync + 'static,
-{
-    build_l2_overlay_db_adapter(gwyneth_types::L1_CHAIN_ID, l1_db, [(chain_id, l2_db)], chain_id)
-        .map_err(|reason| GwynethRunnerInitError::OverlayDbAdapterInit { chain_id, reason })
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FeeSurfaceMathError {
@@ -191,10 +171,6 @@ where
 
     fn ctx(&self) -> &InnerContext<DB> {
         &self.inner.ctx
-    }
-
-    fn ctx_mut(&mut self) -> &mut InnerContext<DB> {
-        &mut self.inner.ctx
     }
 
     /// Get a reference to the Gwyneth journal.
@@ -867,82 +843,11 @@ where
     }
 }
 
-impl<L1DB, L2DB, I> GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>
-where
-    L1DB: revm::Database + Debug,
-    L2DB: revm::Database + Debug,
-    L1DB::Error: Debug + Send + Sync + 'static,
-    L2DB::Error: Debug + Send + Sync + 'static,
-    I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>,
-{
-    /// Switch the active overlay chain.
-    pub fn switch_chain(&mut self, chain_id: u64) -> Result<(), String> {
-        let mode = self.ctx().local().execution_mode();
-        gwyneth_engine::apply_chain_state(
-            self.ctx_mut(),
-            ChainState::new(chain_id, chain_id, mode),
-        )
-            .map_err(|_| "Chain switch failed".to_string())
-    }
-
-    /// Return the current active chain id.
-    pub fn current_chain_id(&self) -> u64 {
-        self.db().current_chain_id()
-    }
-}
-
 // Note: Use `GwynethEvmFactoryImpl::for_surface(..)` + `alloy_evm::evm::BoundedEvmFactory<DB>`
 // to express gwyneth-only DB bounds without mirroring the canonical `EvmFactory` trait.
 
 /// Convenience alias for the Gwyneth context backing the inspector.
 pub type GwynethEvmContext<DB> = InnerContext<DB>;
-
-/// Extension trait that makes building overlay-enabled EVMs ergonomic.
-pub trait GwynethEvmExt {
-    /// Create a Gwyneth EVM that has both L1 and L2 databases attached.
-    fn create_l2_evm<L1DB, L2DB, I>(
-        &self,
-        l1_db: L1DB,
-        l2_db: L2DB,
-        chain_id: u64,
-        env: EvmEnv<SpecId>,
-        inspector: I,
-    ) -> Result<GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>, GwynethRunnerInitError>
-    where
-        L1DB: revm::Database + Debug,
-        L2DB: revm::Database + Debug,
-        L1DB::Error: Debug + Send + Sync + 'static,
-        L2DB::Error: Debug + Send + Sync + 'static,
-        I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>;
-}
-
-impl GwynethEvmExt for GwynethEvmFactoryImpl {
-    fn create_l2_evm<L1DB, L2DB, I>(
-        &self,
-        l1_db: L1DB,
-        l2_db: L2DB,
-        chain_id: u64,
-        env: EvmEnv<SpecId>,
-        inspector: I,
-    ) -> Result<GwynethRunner<L2OverlayDb<L1DB, L2DB>, I>, GwynethRunnerInitError>
-    where
-        L1DB: revm::Database + Debug,
-        L2DB: revm::Database + Debug,
-        L1DB::Error: Debug + Send + Sync + 'static,
-        L2DB::Error: Debug + Send + Sync + 'static,
-        I: Inspector<InnerContext<L2OverlayDb<L1DB, L2DB>>>,
-    {
-        let overlay = build_single_chain_overlay_db(l1_db, l2_db, chain_id)?;
-        Ok(GwynethRunner::from_env(
-            overlay,
-            env,
-            inspector,
-            self.detector_config.clone(),
-            ExecutionSurface::TxSubmission,
-            true,
-        ))
-    }
-}
 
 #[cfg(test)]
 mod lib_test;
