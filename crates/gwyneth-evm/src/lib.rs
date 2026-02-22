@@ -213,17 +213,7 @@ where
     /// Clone the current Gwyneth journal.
     ///
     /// This is useful for capturing the journal state after transaction execution.
-    /// Note: This clones the journal without populating accounts_per_chain.
-    /// Use `clone_gwyneth_journal_with_accounts` if you need per-chain account tracking.
     pub fn clone_gwyneth_journal(&self) -> gwyneth_types::GwynethJournal {
-        self.gwyneth_journal().clone()
-    }
-
-    /// Clone the Gwyneth journal and populate accounts_per_chain from the tracking journal.
-    ///
-    /// Phase 1 scaffolding does not yet populate per-chain account tracking; later slices
-    /// will wire this through the gwyneth-owned tracking journal.
-    pub fn clone_gwyneth_journal_with_accounts(&self) -> gwyneth_types::GwynethJournal {
         self.gwyneth_journal().clone()
     }
 
@@ -235,14 +225,6 @@ where
     /// Get a mutable reference to the underlying database.
     pub fn db_mut(&mut self) -> &mut DB {
         self.inner.ctx.db_mut()
-    }
-
-    /// Get a reference to the tracking journal.
-    ///
-    /// The tracking journal captures per-chain state changes during cross-chain
-    /// execution.
-    pub fn tracking_journal(&self) -> &TrackingJournal<DB> {
-        &self.inner.ctx.journaled_state
     }
 
     /// Get a mutable reference to the tracking journal.
