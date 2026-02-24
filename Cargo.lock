@@ -1525,6 +1525,7 @@ dependencies = [
 [[package]]
 name = "gwyneth-detector"
 version = "0.1.0"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "gwyneth-types",
  "lru",
@@ -1539,6 +1540,7 @@ dependencies = [
 [[package]]
 name = "gwyneth-engine"
 version = "0.1.0"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "alloy-sol-types",
  "gwyneth-detector",
@@ -1557,6 +1559,7 @@ dependencies = [
 [[package]]
 name = "gwyneth-types"
 version = "0.1.0"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "alloy-rlp",
  "revm-context-interface",
@@ -1995,6 +1998,7 @@ dependencies = [
 [[package]]
 name = "op-revm"
 version = "12.0.2"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "auto_impl",
  "revm",
@@ -2337,6 +2341,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 [[package]]
 name = "revm"
 version = "31.0.2"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "revm-bytecode",
  "revm-context",
@@ -2354,6 +2359,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "7.1.1"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "bitvec",
  "phf",
@@ -2364,6 +2370,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "11.0.2"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -2379,6 +2386,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "12.0.1"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -2393,6 +2401,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "9.0.5"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "alloy-eips",
  "revm-bytecode",
@@ -2405,6 +2414,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "8.0.5"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "auto_impl",
  "either",
@@ -2416,6 +2426,7 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "12.0.2"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "auto_impl",
  "derive-where",
@@ -2433,6 +2444,7 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "12.0.2"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "auto_impl",
  "either",
@@ -2449,6 +2461,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "29.0.1"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -2460,6 +2473,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "29.0.1"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -2482,6 +2496,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "21.0.2"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "alloy-primitives",
  "num_enum",
@@ -2492,6 +2507,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "8.1.1"
+source = "git+https://github.com/taikoxyz/revm-private?branch=gwyneth-revm-oggy-v98#afa190f7bd0c307cf64be985047c7472f84791fa"
 dependencies = [
  "bitflags",
  "revm-bytecode",

@@ -23,9 +23,9 @@ auto_impl.workspace = true
 revm.workspace = true
 
 # gwyneth engine + related crates
-gwyneth-engine = { path = "../../../revm-private/gwyneth/crates/gwyneth-engine", default-features = false }
-gwyneth-detector = { path = "../../../revm-private/gwyneth/crates/gwyneth-detector", default-features = false }
-gwyneth-types = { path = "../../../revm-private/gwyneth/crates/gwyneth-types", default-features = false }
+gwyneth-engine = { git = "https://github.com/taikoxyz/revm-private", branch = "gwyneth-revm-oggy-v98", default-features = false }
+gwyneth-detector = { git = "https://github.com/taikoxyz/revm-private", branch = "gwyneth-revm-oggy-v98", default-features = false }
+gwyneth-types = { git = "https://github.com/taikoxyz/revm-private", branch = "gwyneth-revm-oggy-v98", default-features = false }
 
 [features]
 default = ["std"]
